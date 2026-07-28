@@ -11,6 +11,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 ### Upcoming
 
 - **Breaking:** removed `complex_reasoning` from `bifrost.governance.complexityAnalyzerConfig.tier_boundaries` — the COMPLEX and REASONING complexity tiers are merged, so boundaries are now just `simple_medium` and `medium_complex` (scores at or above `medium_complex` are COMPLEX). Values files that still set `complex_reasoning` fail schema validation; delete the field before upgrading. Renders into `governance.complexity_analyzer_config.tier_boundaries`.
+- Complexity Router keyword configuration now uses `simple_keywords`, `medium_keywords`, and `complex_keywords`. Existing four-list Helm values remain accepted for upgrades: `code_keywords` and `technical_keywords` are merged into Medium, and `reasoning_keywords` becomes Complex. New values should use the three-list shape.
 
 ### 2.1.31
 
