@@ -29,6 +29,8 @@
   ENV CGO_ENABLED=1 GOOS=linux GOPROXY=https://goproxy.cn,direct GOSUMDB=off
 
   COPY transports/go.mod transports/go.sum ./
+  # pt-s2a: copy local core so the replace directive in go.mod resolves.
+  COPY core/ /core/
   RUN ls
   RUN cat go.mod
   RUN go mod download
