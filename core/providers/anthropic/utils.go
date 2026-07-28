@@ -889,6 +889,15 @@ func SupportsNativeEffort(model string) bool {
 // Source: https://platform.claude.com/docs/en/build-with-claude/effort
 func SupportsEffortParameter(model string) bool {
 	m := strings.ToLower(model)
+	// pt-s2a: OpenAI GPT-5.x models routed through an anthropic-typed provider
+	// (e.g. via a sub2api upstream doing Anthropic→OpenAI conversion) accept
+	// output_config.effort. Without this, bifrost strips the field before
+	// forwarding, so the downstream gateway never sees the client's effort
+	// and falls back to its default. Covers gpt-5 / gpt-5.2..5.6 variants
+	// (luna/terra/sol/mini/codex/...).
+	if strings.HasPrefix(m, "gpt-5") {
+		return true
+	}
 	if IsFableFamily(m) || IsSonnet5Plus(m) || IsOpus5Plus(m) {
 		return true
 	}
