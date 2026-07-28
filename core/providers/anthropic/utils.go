@@ -286,16 +286,13 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			req.OutputConfig = nil
 		}
 	}
-	// output_config.effort — model-gated per
-	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
-	// outside the supported set return: "This model does not support the
-	// effort parameter."
-	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !SupportsEffortParameter(model) {
-		req.OutputConfig.Effort = nil
-		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
-			req.OutputConfig = nil
-		}
-	}
+	// output_config.effort — pass through unconditionally.
+	// pt-s2a: the downstream gateway (sub2api) owns effort translation for
+	// non-Claude models routed through an anthropic-typed provider (e.g. gpt-5.x
+	// via OpenAI conversion). The upstream model-gated check dropped effort for
+	// any model bifrost didn't recognize as effort-capable, so the client's
+	// effort never reached the downstream and it fell back to its default.
+	// Removing the gate lets effort flow through verbatim for all models.
 	if req.InferenceGeo != nil && !features.InferenceGeo {
 		req.InferenceGeo = nil
 	}
@@ -607,22 +604,9 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		}
 	}
 
-	// output_config.effort — model-gated per
-	// https://platform.claude.com/docs/en/build-with-claude/effort.
-	// Mirrors the typed path; same cleanup of an empty parent.
-	if providerUtils.JSONFieldExists(jsonBody, "output_config.effort") &&
-		!SupportsEffortParameter(model) {
-		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config.effort")
-		if err != nil {
-			return nil, fmt.Errorf("strip raw output_config.effort: %w", err)
-		}
-		if oc := providerUtils.GetJSONField(jsonBody, "output_config"); oc.IsObject() && len(oc.Map()) == 0 {
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config")
-			if err != nil {
-				return nil, fmt.Errorf("strip raw output_config: %w", err)
-			}
-		}
-	}
+	// output_config.effort — pass through unconditionally (pt-s2a).
+	// The downstream gateway owns effort translation for non-Claude models
+	// routed through an anthropic-typed provider; never strip it here.
 
 	// top-level cache_control.scope
 	if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, "cache_control.scope") {

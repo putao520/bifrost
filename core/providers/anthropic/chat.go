@@ -584,14 +584,19 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						BudgetTokens: schemas.Ptr(budgetTokens),
 					}
 				} else {
-					// Older models: budget_tokens only
-					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
-					if err != nil {
-						return nil, err
-					}
-					anthropicReq.Thinking = &AnthropicThinking{
-						Type:         "enabled",
-						BudgetTokens: schemas.Ptr(budgetTokens),
+					// Older / non-Claude models: budget_tokens only
+					// pt-s2a: write effort back to output_config so a downstream
+					// gateway routing to non-Claude models (e.g. gpt-5.x via OpenAI
+					// conversion) receives the client's effort. These models may not
+					// accept "max"/"xhigh" as a budget source, so try the budget
+					// conversion but fall back to effort-only on failure (the
+					// downstream owns thinking↔effort translation).
+					setEffortOnOutputConfig(anthropicReq, effort)
+					if budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens); err == nil {
+						anthropicReq.Thinking = &AnthropicThinking{
+							Type:         "enabled",
+							BudgetTokens: schemas.Ptr(budgetTokens),
+						}
 					}
 				}
 			} else if !IsFableFamily(capModel) {
