@@ -2,49 +2,33 @@ package openai
 
 import "testing"
 
-// TestPtS2A_NewModelEffortSupport verifies pre-support for GPT-6, Grok 4.x/5,
-// and composer3 across the reasoning-effort capability functions.
-func TestPtS2A_NewModelEffortSupport(t *testing.T) {
-	gpt6Models := []string{"gpt-6", "gpt-6-mini", "gpt-6.1", "gpt-6-luna"}
-	composerModels := []string{"composer3", "composer3-mini"}
-
-	t.Run("GPT-6 is reasoning model + xhigh + max", func(t *testing.T) {
-		for _, m := range gpt6Models {
-			if !isOpenAIReasoningModel(m) {
-				t.Errorf("isOpenAIReasoningModel(%q) = false, want true", m)
-			}
-			if !supportsOpenAIXHighReasoningEffort(m) {
-				t.Errorf("supportsOpenAIXHighReasoningEffort(%q) = false, want true", m)
-			}
-			if !supportsMaxReasoningEffort(m) {
-				t.Errorf("supportsMaxReasoningEffort(%q) = false, want true", m)
-			}
+// TestPtS2A_NewModelReasoningSupport verifies GPT-6 and composer3 are recognized
+// as reasoning models, and that reasoning effort is NEVER downgraded by model
+// (max/xhigh pass through verbatim; the upstream is the sole arbiter).
+func TestPtS2A_NewModelReasoningSupport(t *testing.T) {
+	reasoningModels := []string{"gpt-6", "gpt-6-mini", "gpt-6.1", "gpt-6-luna", "composer3", "composer3-mini"}
+	for _, m := range reasoningModels {
+		if !isOpenAIReasoningModel(m) {
+			t.Errorf("isOpenAIReasoningModel(%q) = false, want true", m)
 		}
-	})
+	}
 
-	t.Run("composer3 is reasoning model + xhigh + max", func(t *testing.T) {
-		for _, m := range composerModels {
-			if !isOpenAIReasoningModel(m) {
-				t.Errorf("isOpenAIReasoningModel(%q) = false, want true", m)
-			}
-			if !supportsOpenAIXHighReasoningEffort(m) {
-				t.Errorf("supportsOpenAIXHighReasoningEffort(%q) = false, want true", m)
-			}
-			if !supportsMaxReasoningEffort(m) {
-				t.Errorf("supportsMaxReasoningEffort(%q) = false, want true", m)
-			}
+	t.Run("effort never downgraded by model", func(t *testing.T) {
+		// Regardless of model, the client's chosen effort must pass through.
+		// Only the pure literal "minimal"→"low" translation is kept.
+		cases := []struct{ model, effort, want string }{
+			{"gpt-5.2", "max", "max"},   // previously downgraded to xhigh
+			{"gpt-5.2", "xhigh", "xhigh"}, // previously downgraded to high
+			{"gpt-4o", "max", "max"},    // non-reasoning model still passes max
+			{"gpt-6", "max", "max"},
+			{"composer3", "max", "max"},
+			{"any-model", "minimal", "low"}, // literal translation only
+			{"any-model", "high", "high"},
 		}
-	})
-
-	t.Run("max effort still downgrades for older gpt-5", func(t *testing.T) {
-		// gpt-5.2 supports xhigh but not max → max should still resolve
-		// (normalizeOpenAIReasoningEffort handles downgrade; here we just
-		// confirm supportsMaxReasoningEffort("gpt-5.2") = false).
-		if supportsMaxReasoningEffort("gpt-5.2") {
-			t.Error("supportsMaxReasoningEffort(gpt-5.2) should be false")
-		}
-		if !supportsOpenAIXHighReasoningEffort("gpt-5.2") {
-			t.Error("supportsOpenAIXHighReasoningEffort(gpt-5.2) should be true")
+		for _, c := range cases {
+			if got := normalizeOpenAIReasoningEffort(c.model, c.effort); got != c.want {
+				t.Errorf("normalizeOpenAIReasoningEffort(%q, %q) = %q, want %q", c.model, c.effort, got, c.want)
+			}
 		}
 	})
 }

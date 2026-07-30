@@ -90,15 +90,11 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// Apply Mistral-specific transformations for Vertex Mistral models
 		if schemas.IsMistralModel(bifrostReq.Model) {
 			openaiReq.applyMistralCompatibility()
-		} else if openaiReq.Reasoning != nil && openaiReq.Reasoning.Effort != nil &&
-			*openaiReq.Reasoning.Effort == "none" {
-			// Vertex Model Garden MaaS models (gpt-oss, Qwen3, kimi-k2-thinking,
-			// minimax-m2, ...) reject reasoning_effort "none" — only
-			// minimal/low/medium/high are accepted. Drop it so the model uses its
-			// default. (Mistral on Vertex does accept "none" and is handled above;
-			// // proprietary OpenAI/Azure GPT-5.1+ keep "none" via their own cases.)
-			openaiReq.Reasoning.Effort = nil
 		}
+		// pt-s2a: do not clear reasoning_effort=="none" for Vertex MaaS models.
+		// The client's intent (disable reasoning) must reach the upstream
+		// verbatim; the upstream rejects unsupported literals with a clear error
+		// rather than bifrost silently substituting the model default.
 		return openaiReq
 	case schemas.Fireworks:
 		// Fireworks uses prompt_cache_isolation_key for cache isolation on chat/completions.
@@ -225,12 +221,5 @@ func (req *OpenAIChatRequest) applyXAICompatibility(model string) {
 		req.ChatParameters.Stop = nil
 	}
 
-	// pt-s2a: grok-3-mini and the entire Grok 4.x/5 series support
-	// reasoning_effort; only non-mini grok-3 rejects it.
-	if req.ChatParameters.Reasoning != nil &&
-		strings.Contains(model, "grok-3") &&
-		!strings.Contains(model, "grok-3-mini") {
-		// Clear reasoning_effort for non-mini grok-3 models
-		req.ChatParameters.Reasoning.Effort = nil
-	}
+	// pt-s2a: never clear reasoning_effort by model — see responses.go.
 }

@@ -273,24 +273,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.Reasoning.Summary = nil
 			}
 
-			// Handle xAI-specific parameter filtering
-			// pt-s2a: grok-3-mini and the entire Grok 4.x/5 series support
-			// reasoning_effort; only the non-mini grok-3 rejects it.
-			if bifrostReq.Provider == schemas.XAI &&
-				schemas.IsGrokReasoningModel(capModel) &&
-				strings.Contains(capModel, "grok-3") &&
-				!strings.Contains(capModel, "grok-3-mini") {
-				// Clear reasoning_effort for non-mini grok-3 reasoning models
-				req.ResponsesParameters.Reasoning.Effort = nil
-			}
-
-			// Handle OpenAI-specific parameter filtering
-			// Only o1/o3 series models support reasoning.effort
-			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it
-			if bifrostReq.Provider == schemas.OpenAI && !isOpenAIReasoningModel(capModel) {
-				// Clear reasoning for non-reasoning OpenAI models to avoid API errors
-				req.ResponsesParameters.Reasoning = nil
-			}
+			// pt-s2a: never clear reasoning_effort by model. The gateway is not
+			// authorized to decide whether a model supports effort — that is the
+			// upstream's call. Stripping it silently downgrades the client's
+			// intent. Previous model-gated clears (grok non-mini, non-reasoning
+			// OpenAI) removed here; the upstream rejects unsupported effort with
+			// a clear error if it truly doesn't accept it.
 		}
 
 		// Strip top_p for OpenAI reasoning models (o1/o3 series) which reject it

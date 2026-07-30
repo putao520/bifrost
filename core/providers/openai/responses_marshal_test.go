@@ -170,11 +170,12 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 		{"provider-prefixed gpt-5.6 keeps max", "openai/gpt-5.6", "max", "max"},
 		{"deepseek-v4 keeps max", "deepseek-v4", "max", "max"},
 		{"glm-5.2 keeps max", "glm-5.2", "max", "max"},
-		{"gpt-5.5 downgrades max to xhigh", "gpt-5.5", "max", "xhigh"},
-		{"gpt-5.2 downgrades max to xhigh", "gpt-5.2", "max", "xhigh"},
+		// pt-s2a: no downgrade by model — effort passes through verbatim.
+		{"gpt-5.5 keeps max (no downgrade)", "gpt-5.5", "max", "max"},
+		{"gpt-5.2 keeps max (no downgrade)", "gpt-5.2", "max", "max"},
 		{"gpt-5.5 keeps xhigh", "gpt-5.5", "xhigh", "xhigh"},
-		{"gpt-5.1 downgrades max to high", "gpt-5.1", "max", "high"},
-		{"gpt-5.1 downgrades xhigh to high", "gpt-5.1", "xhigh", "high"},
+		{"gpt-5.1 keeps max (no downgrade)", "gpt-5.1", "max", "max"},
+		{"gpt-5.1 keeps xhigh (no downgrade)", "gpt-5.1", "xhigh", "xhigh"},
 		{"standard effort passes through", "gpt-5.1", "medium", "medium"},
 	}
 
