@@ -225,10 +225,12 @@ func (req *OpenAIChatRequest) applyXAICompatibility(model string) {
 		req.ChatParameters.Stop = nil
 	}
 
-	// Only grok-3-mini supports reasoning_effort
+	// pt-s2a: grok-3-mini and the entire Grok 4.x/5 series support
+	// reasoning_effort; only non-mini grok-3 rejects it.
 	if req.ChatParameters.Reasoning != nil &&
+		strings.Contains(model, "grok-3") &&
 		!strings.Contains(model, "grok-3-mini") {
-		// Clear reasoning_effort for non-grok-3-mini models
+		// Clear reasoning_effort for non-mini grok-3 models
 		req.ChatParameters.Reasoning.Effort = nil
 	}
 }

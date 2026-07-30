@@ -879,7 +879,11 @@ func SupportsEffortParameter(model string) bool {
 	// forwarding, so the downstream gateway never sees the client's effort
 	// and falls back to its default. Covers gpt-5 / gpt-5.2..5.6 variants
 	// (luna/terra/sol/mini/codex/...).
-	if strings.HasPrefix(m, "gpt-5") {
+	// pt-s2a: also pre-support gpt-6.x and composer3 (reasoning-capable, routed
+	// via anthropic-typed provider to a downstream gateway).
+	if strings.HasPrefix(m, "gpt-5") ||
+		strings.HasPrefix(m, "gpt-6") ||
+		strings.HasPrefix(m, "composer3") {
 		return true
 	}
 	if IsFableFamily(m) || IsSonnet5Plus(m) || IsOpus5Plus(m) {

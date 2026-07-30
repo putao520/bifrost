@@ -124,8 +124,11 @@ func isOpenAIReasoningModel(model string) bool {
 			return true
 		}
 	}
-	// Check for GPT-5 series models which support reasoning.effort
-	if strings.HasPrefix(modelLower, "gpt-5") {
+	// Check for GPT-5/GPT-6 series models which support reasoning.effort
+	// pt-s2a: also pre-support composer3 (reasoning-capable).
+	if strings.HasPrefix(modelLower, "gpt-5") ||
+		strings.HasPrefix(modelLower, "gpt-6") ||
+		strings.HasPrefix(modelLower, "composer3") {
 		return true
 	}
 	return false
@@ -159,23 +162,34 @@ func supportsOpenAIXHighReasoningEffort(model string) bool {
 		model = parsedModel
 	}
 	modelLower := strings.ToLower(model)
-	return strings.HasPrefix(modelLower, "gpt-5.2") ||
+	// pt-s2a: GPT-5.2+ and GPT-6.x all accept xhigh; Composer 3 too.
+	if strings.HasPrefix(modelLower, "gpt-5.2") ||
 		strings.HasPrefix(modelLower, "gpt-5.3-codex") ||
 		strings.HasPrefix(modelLower, "gpt-5.4") ||
 		strings.HasPrefix(modelLower, "gpt-5.5") ||
-		strings.HasPrefix(modelLower, "gpt-5.6")
+		strings.HasPrefix(modelLower, "gpt-5.6") ||
+		strings.HasPrefix(modelLower, "gpt-6") ||
+		strings.HasPrefix(modelLower, "composer3") {
+		return true
+	}
+	return false
 }
 
-// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6, DeepSeek V4, GLM-5.2).
+// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6+, GPT-6.x, Composer 3, DeepSeek V4, GLM-5.2).
 func supportsMaxReasoningEffort(model string) bool {
 	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
 	if parsedModel != "" {
 		model = parsedModel
 	}
 	modelLower := strings.ToLower(model)
-	return strings.HasPrefix(modelLower, "gpt-5.6") ||
+	if strings.HasPrefix(modelLower, "gpt-5.6") ||
+		strings.HasPrefix(modelLower, "gpt-6") ||
+		strings.HasPrefix(modelLower, "composer3") ||
 		strings.HasPrefix(modelLower, "deepseek-v4") ||
-		strings.HasPrefix(modelLower, "glm-5.2")
+		strings.HasPrefix(modelLower, "glm-5.2") {
+		return true
+	}
+	return false
 }
 
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field

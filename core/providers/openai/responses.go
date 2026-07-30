@@ -274,11 +274,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 
 			// Handle xAI-specific parameter filtering
-			// Only grok-3-mini supports reasoning_effort
+			// pt-s2a: grok-3-mini and the entire Grok 4.x/5 series support
+			// reasoning_effort; only the non-mini grok-3 rejects it.
 			if bifrostReq.Provider == schemas.XAI &&
 				schemas.IsGrokReasoningModel(capModel) &&
+				strings.Contains(capModel, "grok-3") &&
 				!strings.Contains(capModel, "grok-3-mini") {
-				// Clear reasoning_effort for non-grok-3-mini xAI reasoning models
+				// Clear reasoning_effort for non-mini grok-3 reasoning models
 				req.ResponsesParameters.Reasoning.Effort = nil
 			}
 
