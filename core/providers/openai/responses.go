@@ -120,16 +120,25 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
+		// pt-s2a: hoisted so the role-clear below can skip messages that will
+		// be converted into role-bearing content messages by the gpt-oss path.
+		isGptOss := strings.Contains(capModel, "gpt-oss")
+		isReasoning := isOpenAIReasoningModel(capModel)
+		// A gpt-oss summary-only item that will be converted into a content
+		// message below — its Role must be preserved through that conversion.
+		willConvertToGptOssContent := isGptOss &&
+			message.ResponsesReasoning != nil &&
+			len(message.ResponsesReasoning.Summary) > 0 &&
+			(message.Content == nil || len(message.Content.ContentBlocks) == 0)
+
 		// OpenAI accepts role only on message input items.
-		if (message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage) ||
-			(message.Type == nil && message.ResponsesReasoning != nil) {
+		if !willConvertToGptOssContent &&
+			((message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage) ||
+				(message.Type == nil && message.ResponsesReasoning != nil)) {
 			message.Role = nil
 		}
 
 		if message.ResponsesReasoning != nil {
-			isGptOss := strings.Contains(capModel, "gpt-oss")
-			isReasoning := isOpenAIReasoningModel(capModel)
-
 			// For non-gpt-oss models, skip reasoning-only messages that have content blocks but no summaries.
 			// For non-reasoning models (e.g., gpt-4o), also skip when EncryptedContent is present since
 			// these models don't produce encrypted reasoning — any encrypted content is cross-provider
@@ -143,8 +152,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 
 			// If the message has summaries but no content blocks and the model is gpt-oss, then convert the summaries to content blocks
-			if len(message.ResponsesReasoning.Summary) > 0 && isGptOss &&
-				(message.Content == nil || len(message.Content.ContentBlocks) == 0) {
+			if willConvertToGptOssContent {
 				var newMessage schemas.ResponsesMessage
 				newMessage.ID = message.ID
 				newMessage.Type = message.Type
