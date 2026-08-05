@@ -16,13 +16,14 @@ import (
 
 // opencodeProvider implements the Provider interface for Opencode Zen and Go gateways.
 type opencodeProvider struct {
-	providerKey         schemas.ModelProvider
-	logger              schemas.Logger
-	client              *fasthttp.Client
-	streamingClient     *fasthttp.Client
-	networkConfig       schemas.NetworkConfig
-	sendBackRawRequest  bool
-	sendBackRawResponse bool
+	providerKey          schemas.ModelProvider
+	logger               schemas.Logger
+	client               *fasthttp.Client
+	streamingClient      *fasthttp.Client
+	networkConfig        schemas.NetworkConfig
+	customProviderConfig *schemas.CustomProviderConfig
+	sendBackRawRequest   bool
+	sendBackRawResponse  bool
 }
 
 // NewOpencodeZenProvider creates a new Opencode Zen provider instance.
@@ -68,13 +69,14 @@ func newOpencodeProvider(
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &opencodeProvider{
-		providerKey:         providerKey,
-		logger:              logger,
-		client:              client,
-		streamingClient:     streamingClient,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		providerKey:          providerKey,
+		logger:               logger,
+		client:               client,
+		streamingClient:      streamingClient,
+		networkConfig:        config.NetworkConfig,
+		customProviderConfig: config.CustomProviderConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
+		sendBackRawResponse:  config.SendBackRawResponse,
 	}, nil
 }
 
@@ -153,8 +155,18 @@ func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, pos
 }
 
 // Responses performs a responses request to the Opencode API.
+// Opencode exposes an OpenAI-compatible chat endpoint only; Responses requests
+// are translated to Chat Completions. A json_schema text.format is converted to
+// a function tool (and response_format stripped) because the upstream rejects
+// "This response_format type is unavailable now" for models that lack native
+// structured-output support.
 func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := p.ChatCompletion(ctx, key, request.ToChatRequest())
+	if err := providerUtils.CheckOperationAllowed(p.providerKey, p.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		return nil, err
+	}
+	chatReq := request.ToChatRequest()
+	p.coerceStructuredOutputToTool(ctx, request, chatReq)
+	chatResponse, err := p.ChatCompletion(ctx, key, chatReq)
 	if err != nil {
 		return nil, err
 	}
@@ -162,9 +174,47 @@ func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Ke
 }
 
 // ResponsesStream performs a streaming responses request to the Opencode API.
+// See Responses for the chat-fallback + structured-output-to-tool rationale.
 func (p *opencodeProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(p.providerKey, p.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
+		return nil, err
+	}
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return p.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	chatReq := request.ToChatRequest()
+	p.coerceStructuredOutputToTool(ctx, request, chatReq)
+	return p.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, chatReq)
+}
+
+// coerceStructuredOutputToTool replaces a json_schema response_format on the
+// chat request with an equivalent function tool, so chat-only upstreams that
+// reject response_format (opencode-backed models) still produce structured JSON.
+// No-op for json_object / text / absent formats. tool_choice is forced unless
+// reasoning/extended thinking is active (Anthropic rejects forcing with thinking).
+func (p *opencodeProvider) coerceStructuredOutputToTool(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, chatReq *schemas.BifrostChatRequest) {
+	if request == nil || request.Params == nil || request.Params.Text == nil || request.Params.Text.Format == nil {
+		return
+	}
+	tool, toolName := schemas.ResponsesTextFormatToChatTool(request.Params.Text.Format)
+	if tool == nil {
+		return
+	}
+
+	// Strip response_format: the upstream rejects it, and the tool replaces it.
+	if chatReq.Params != nil {
+		chatReq.Params.ResponseFormat = nil
+	} else {
+		chatReq.Params = &schemas.ChatParameters{}
+	}
+	chatReq.Params.Tools = append(chatReq.Params.Tools, *tool)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
+
+	// Skip forcing tool_choice when extended thinking is active.
+	thinkingEnabled := request.Params.Reasoning != nil &&
+		(request.Params.Reasoning.MaxTokens != nil ||
+			(request.Params.Reasoning.Effort != nil && *request.Params.Reasoning.Effort != "none"))
+	if !thinkingEnabled {
+		chatReq.Params.ToolChoice = schemas.ForceChatToolChoice(toolName)
+	}
 }
 
 // Embedding is not supported by Opencode.
