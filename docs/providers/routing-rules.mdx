@@ -67,10 +67,22 @@ Routing rules evaluate CEL expressions with these available variables:
 
 #### Request Context
 ```cel
-model          // Requested model (string)
-provider       // Current provider (string)
-request_type   // Request type (chat_completion, embedding, batch, image_generation, moderation, transcription, translation)
+model            // Requested model (string)
+provider         // Current provider (string)
+request_type     // Request type (chat_completion, embedding, batch, image_generation, moderation, transcription, translation)
+context_tokens   // Estimated token count of the full request context: system prompt + all messages + tools (int)
+message_count    // Number of messages in the current request (int)
 ```
+
+**Request Context Examples:**
+```cel
+context_tokens > 100000                              // Route when the full context exceeds 100k tokens
+context_tokens < 128000 && message_count > 20        // Long multi-turn conversation still within a 128k window
+```
+
+<Note>
+`context_tokens` is a **local estimate** of the full request context (system prompt, all messages, and tools), computed with a ~10% conservative margin (it errs high, never low). It exists only for routing decisions and is **not a billing basis**. When setting thresholds, aim for roughly **85% of the target model's context window** — e.g., use `context_tokens > 109000` to trigger a switch for a target with a 128k window, so the switch happens before the window is exhausted.
+</Note>
 
 #### Headers & Parameters
 ```cel

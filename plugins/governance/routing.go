@@ -47,6 +47,7 @@ type RoutingContext struct {
 	QueryParams              map[string]string                   // Query parameters for dynamic routing
 	BudgetAndRateLimitStatus *BudgetAndRateLimitStatus           // Budget and rate limit status by provider/model
 	computeComplexity        func() *complexity.ComplexityResult // Lazy complexity computation; called at most once when a rule references "complexity_tier"
+	computeContextTokens     func() *ContextSizeResult           // Lazy context-size estimation; called at most once when a rule references "context_tokens" or "message_count"
 }
 
 type RoutingEngine struct {
@@ -128,6 +129,8 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	var finalDecision *RoutingDecision
 	var complexityResult *complexity.ComplexityResult
 	computeComplexity := routingCtx.computeComplexity
+	var contextSizeResult *ContextSizeResult
+	computeContextSize := routingCtx.computeContextTokens
 
 	for chainStep := 0; ; chainStep++ {
 		// TERMINATION 4: Chain exceeded configured max depth.
@@ -158,6 +161,10 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 		}
 		if complexityResult != nil {
 			variables["complexity_tier"] = complexityResult.Tier
+		}
+		if contextSizeResult != nil {
+			variables["context_tokens"] = contextSizeResult.EstimatedTokens
+			variables["message_count"] = contextSizeResult.MessageCount
 		}
 
 		re.logger.Debug("[RoutingEngine] Chain Step: %d", chainStep)
@@ -190,6 +197,10 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				re.logger.Debug("[RoutingEngine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
 				referencesComplexity := celExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
+				// context_tokens and message_count come from one estimation, so a
+				// reference to either identifier triggers the same computation.
+				referencesContextSize := celExpressionReferencesIdentifier(rule.CelExpression, "context_tokens") ||
+					celExpressionReferencesIdentifier(rule.CelExpression, "message_count")
 
 				// Lazy complexity: compute only when a rule references complexity and it hasn't been computed yet
 				if complexityResult == nil && computeComplexity != nil && referencesComplexity {
@@ -197,6 +208,17 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					computeComplexity = nil // compute at most once
 					if complexityResult != nil {
 						variables["complexity_tier"] = complexityResult.Tier
+					}
+				}
+
+				// Lazy context-size estimation: compute only when a rule references
+				// context_tokens or message_count and it hasn't been computed yet
+				if contextSizeResult == nil && computeContextSize != nil && referencesContextSize {
+					contextSizeResult = computeContextSize()
+					computeContextSize = nil // compute at most once
+					if contextSizeResult != nil {
+						variables["context_tokens"] = contextSizeResult.EstimatedTokens
+						variables["message_count"] = contextSizeResult.MessageCount
 					}
 				}
 
@@ -210,6 +232,11 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				var unknowns []*cel.AttributePatternType
 				if referencesComplexity && complexityResult == nil {
 					unknowns = append(unknowns, cel.AttributePattern("complexity_tier"))
+				}
+				if referencesContextSize && contextSizeResult == nil {
+					unknowns = append(unknowns,
+						cel.AttributePattern("context_tokens"),
+						cel.AttributePattern("message_count"))
 				}
 
 				matched, err := evaluateCELExpression(program, variables, unknowns...)
@@ -520,6 +547,13 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 	// evaluated as a CEL unknown so negative predicates do not accidentally match.
 	variables["complexity_tier"] = ""
 
+	// Placeholder only: EvaluateRoutingRules fills these lazily when a rule
+	// actually references context_tokens or message_count. If estimation is
+	// unavailable, both are evaluated as CEL unknowns so negative predicates
+	// do not accidentally match.
+	variables["context_tokens"] = 0
+	variables["message_count"] = 0
+
 	return variables, nil
 }
 
@@ -663,5 +697,11 @@ func createCELEnvironment() (*cel.Env, error) {
 		// Complexity tier. When analysis is unavailable, evaluation marks this
 		// variable as CEL unknown so complexity-dependent predicates do not match.
 		cel.Variable("complexity_tier", cel.StringType),
+
+		// Estimated context size. When extraction is unavailable, evaluation
+		// marks both variables as CEL unknown so size-dependent predicates do
+		// not match.
+		cel.Variable("context_tokens", cel.IntType),
+		cel.Variable("message_count", cel.IntType),
 	)
 }

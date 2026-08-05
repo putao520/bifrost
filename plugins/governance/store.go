@@ -4055,12 +4055,15 @@ func (gs *LocalGovernanceStore) GetRoutingProgram(ctx context.Context, rule *con
 		return nil, fmt.Errorf("CEL compile error: %s", issues.Err().Error())
 	}
 
-	// Create program. Partial evaluation is only needed for complexity rules,
-	// where routing treats unavailable complexity_tier as unknown instead of
-	// leaking an empty-string sentinel.
+	// Create program. Partial evaluation is only needed for lazy-variable
+	// rules, where routing treats an unavailable value (complexity_tier,
+	// context_tokens, message_count) as CEL unknown instead of leaking a
+	// placeholder sentinel into the predicate.
 	var program cel.Program
 	var err error
-	if celASTReferencesIdentifier(ast, "complexity_tier") {
+	if celASTReferencesIdentifier(ast, "complexity_tier") ||
+		celASTReferencesIdentifier(ast, "context_tokens") ||
+		celASTReferencesIdentifier(ast, "message_count") {
 		program, err = gs.routingCELEnv.Program(ast, cel.EvalOptions(cel.OptPartialEval))
 	} else {
 		program, err = gs.routingCELEnv.Program(ast)

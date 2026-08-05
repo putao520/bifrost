@@ -203,14 +203,25 @@ function convertRuleToCEL(rule: RuleType): string {
 		return `${field}.${celOperator}(${formattedValue})`;
 	}
 
-	// Handle tokens_used, request, and budget_used
+	// Handle numeric comparison fields.
+	// Rate limit/budget fields (tokens_used, request, budget_used):
 	// Structure: tokens_used > 80.0 or request >= 75.0 or budget_used > 50.0
 	// These are simple numeric comparisons against percent_used values from GetBudgetAndRateLimitStatus
-	// which already returns the max of model+provider, model-only, and provider-only configs
+	// which already returns the max of model+provider, model-only, and provider-only configs.
+	// Request context fields (context_tokens, message_count):
+	// Structure: context_tokens > 100000 or message_count >= 20
+	// These are ints, so the literal must stay integer (no decimal point) to match the CEL variable types.
 	const isRateLimitOrBudgetField = field === "tokens_used" || field === "request" || field === "budget_used";
-	if (isRateLimitOrBudgetField) {
+	const isIntField = field === "context_tokens" || field === "message_count";
+	if (isRateLimitOrBudgetField || isIntField) {
 		const thresholdValue = String(value).trim();
 		if (thresholdValue) {
+			if (isIntField) {
+				// Convert to int to match CEL variable type (context_tokens, message_count are ints)
+				const intValue = parseInt(thresholdValue, 10);
+				const actualValue = isNaN(intValue) ? thresholdValue : String(intValue);
+				return `${field} ${celOperator} ${actualValue}`;
+			}
 			// Convert to double to match CEL variable type (tokens_used, request, budget_used are all doubles)
 			const numValue = parseFloat(thresholdValue);
 			let actualValue: string;
