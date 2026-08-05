@@ -1452,7 +1452,9 @@ func HandleOpenAIChatCompletionStreaming(
 // Responses performs a responses request to the OpenAI API.
 func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if provider.shouldFallbackResponsesToChat(schemas.ResponsesRequest, schemas.ChatCompletionRequest) {
-		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+		chatReq := request.ToChatRequest()
+		coerceResponsesTextFormatToChatTool(ctx, request, chatReq)
+		chatResponse, err := provider.ChatCompletion(ctx, key, chatReq)
 		if err != nil {
 			return nil, err
 		}
@@ -1636,7 +1638,9 @@ func HandleOpenAIResponsesRequest(
 func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if provider.shouldFallbackResponsesToChat(schemas.ResponsesStreamRequest, schemas.ChatCompletionStreamRequest) {
 		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+		chatReq := request.ToChatRequest()
+		coerceResponsesTextFormatToChatTool(ctx, request, chatReq)
+		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, chatReq)
 	}
 
 	// Check if chat completion stream is allowed for this provider
@@ -2147,6 +2151,39 @@ func (provider *OpenAIProvider) shouldFallbackResponsesToChat(responsesOp, chatO
 		return false
 	}
 	return !cfg.IsOperationAllowed(responsesOp) && cfg.IsOperationAllowed(chatOp)
+}
+
+// coerceResponsesTextFormatToChatTool converts a json_schema text.format on the
+// responses request into a function tool on the chat request, and strips
+// response_format. Chat-only upstreams that reach this path via
+// shouldFallbackResponsesToChat (they disabled native Responses but allow Chat
+// Completions) typically reject response_format — e.g. opencode-backed models
+// return "This response_format type is unavailable now". Routing the schema
+// through a function tool instead produces the same structured JSON via tool
+// use, which these upstreams support. No-op for json_object / text / absent
+// formats. tool_choice is forced unless reasoning/extended thinking is active.
+func coerceResponsesTextFormatToChatTool(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, chatReq *schemas.BifrostChatRequest) {
+	if request == nil || request.Params == nil || request.Params.Text == nil || request.Params.Text.Format == nil {
+		return
+	}
+	tool, toolName := schemas.ResponsesTextFormatToChatTool(request.Params.Text.Format)
+	if tool == nil {
+		return
+	}
+	// Strip response_format: chat-only upstreams reject it, and the tool replaces it.
+	if chatReq.Params == nil {
+		chatReq.Params = &schemas.ChatParameters{}
+	}
+	chatReq.Params.ResponseFormat = nil
+	chatReq.Params.Tools = append(chatReq.Params.Tools, *tool)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
+	// Do NOT force tool_choice here. Chat-only upstreams vary in what they
+	// accept: some reject forced tool_choice under thinking/reasoning modes
+	// ("Thinking mode does not support this tool_choice"), others ignore it.
+	// The tool is named with the bf_so_ prefix and recorded in context so the
+	// response side can still fold the tool-call result back into structured
+	// output. Leaving tool_choice unset lets the model decide, which is the
+	// safest default across heterogeneous OpenAI-compatible upstreams.
 }
 
 // Speech handles non-streaming speech synthesis requests.

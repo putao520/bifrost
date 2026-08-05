@@ -3278,15 +3278,32 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 		Type: formatType,
 	}
 
+	// Anthropic's output_format nests the schema under a "json_schema" object:
+	//   {"type":"json_schema","json_schema":{"name":...,"schema":{...},"strict":...}}
+	// Some callers send a flattened shape instead:
+	//   {"type":"json_schema","name":...,"schema":{...}}
+	// Resolve the json_schema sub-object once so name/schema/strict are read
+	// from the right place regardless of shape. Falls back to formatMap itself
+	// for the flattened form.
+	schemaSource := formatMap
+	if jsObj, ok := schemas.SafeExtractOrderedMap(formatMap["json_schema"]); ok {
+		schemaSource = jsObj.ToMap() // shallow: nested values stay ordered
+	}
+
 	// Extract name if present
-	if name, ok := formatMap["name"].(string); ok && strings.TrimSpace(name) != "" {
+	if name, ok := schemaSource["name"].(string); ok && strings.TrimSpace(name) != "" {
 		format.Name = schemas.Ptr(strings.TrimSpace(name))
 	} else {
 		format.Name = schemas.Ptr("output_format")
 	}
 
+	// Extract strict if present
+	if strict, ok := schemaSource["strict"].(bool); ok {
+		format.Strict = &strict
+	}
+
 	// Extract schema if present (an *OrderedMap after the ordered decode)
-	if schemaOrdered, ok := schemas.SafeExtractOrderedMap(formatMap["schema"]); ok {
+	if schemaOrdered, ok := schemas.SafeExtractOrderedMap(schemaSource["schema"]); ok {
 		schemaMap := schemaOrdered.ToMap() // shallow: nested values stay ordered
 		jsonSchema := &schemas.ResponsesTextConfigFormatJSONSchema{}
 
