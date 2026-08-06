@@ -1765,6 +1765,14 @@ var grokReasoningModels = []string{
 	"grok-4",
 	"grok-4-fast-reasoning",
 	"grok-4-1-fast-reasoning",
+	// pt-s2a: pre-support Grok 4.x and 5 series reasoning models.
+	"grok-4.5",
+	"grok-4-5",
+	"grok-4.6",
+	"grok-4-6",
+	"grok-4.7",
+	"grok-4-7",
+	"grok-5",
 	"grok-code-fast-1",
 }
 

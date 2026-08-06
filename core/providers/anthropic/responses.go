@@ -3322,6 +3322,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
 	provider, model := schemas.ParseModelString(req.Model, "")
 
+
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider:  provider,
 		Model:     model,
@@ -3400,6 +3401,16 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	if req.OutputConfig != nil && req.OutputConfig.TaskBudget != nil {
 		params.ExtraParams["task_budget"] = req.OutputConfig.TaskBudget
 	}
+	// pt-s2a: output_config.effort must drive reasoning even when the client
+	// omits the thinking field entirely (e.g. an anthropic-typed request whose
+	// only reasoning signal is effort, routed to a downstream gateway doing
+	// Anthropic→OpenAI conversion). Without this, req.Thinking==nil skips the
+	// whole reasoning block and effort is silently dropped.
+	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && (req.Thinking == nil || (req.Thinking.Type != "enabled" && req.Thinking.Type != "adaptive")) {
+		params.Reasoning = &schemas.ResponsesParametersReasoning{
+			Effort: schemas.Ptr(*req.OutputConfig.Effort),
+		}
+	}
 	if req.Thinking != nil {
 		if req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive" {
 			var summary *string
@@ -3440,28 +3451,6 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 		} else {
 			params.Reasoning = &schemas.ResponsesParametersReasoning{
 				Effort: schemas.Ptr("none"),
-			}
-		}
-	}
-	if include, ok := schemas.SafeExtractStringSlice(req.ExtraParams["include"]); ok {
-		params.Include = include
-	}
-	if req.ServiceTier != nil {
-		mapped := MapAnthropicRequestServiceTierToBifrost(*req.ServiceTier)
-		params.ServiceTier = &mapped
-	}
-
-	// Add truncation parameter if computer tool is being used
-	if provider == schemas.OpenAI && req.Tools != nil {
-		for _, tool := range req.Tools {
-			if tool.Type == nil {
-				continue
-			}
-			switch *tool.Type {
-			case AnthropicToolTypeComputer20250124, AnthropicToolTypeComputer20251124:
-				params.Truncation = schemas.Ptr("auto")
-			case AnthropicToolTypeWebSearch20250305, AnthropicToolTypeWebSearch20260209:
-				params.Include = []string{"web_search_call.action.sources"}
 			}
 		}
 	}
@@ -3679,14 +3668,19 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 								BudgetTokens: schemas.Ptr(budgetTokens),
 							}
 						} else {
-							// Older models: budget_tokens only
-							budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
-							if err != nil {
-								return nil, err
-							}
-							anthropicReq.Thinking = &AnthropicThinking{
-								Type:         "enabled",
-								BudgetTokens: schemas.Ptr(budgetTokens),
+							// Older / non-Claude models: budget_tokens only
+							// pt-s2a: write effort back to output_config so a downstream
+							// gateway routing to non-Claude models (e.g. gpt-5.x via
+							// OpenAI conversion) receives the client's effort. These models
+							// may not accept "max"/"xhigh" as a budget source, so try the
+							// budget conversion but fall back to effort-only on failure
+							// (the downstream owns thinking↔effort translation).
+							setEffortOnOutputConfig(anthropicReq, effort)
+							if budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens); err == nil {
+								anthropicReq.Thinking = &AnthropicThinking{
+									Type:         "enabled",
+									BudgetTokens: schemas.Ptr(budgetTokens),
+								}
 							}
 						}
 					} else if !IsFableFamily(capModel) {
@@ -7244,6 +7238,11 @@ func convertAnthropicToolChoiceToBifrost(toolChoice *AnthropicToolChoice) *schem
 			bifrostToolChoice.ResponsesToolChoiceStr = schemas.Ptr(string(schemas.ResponsesToolChoiceTypeAny))
 		case "none":
 			bifrostToolChoice.ResponsesToolChoiceStr = schemas.Ptr(string(schemas.ResponsesToolChoiceTypeNone))
+		case "required":
+			// Anthropic tool_choice type "required" maps to the Responses API
+			// "required" (force-call semantics); the downstream gateway owns
+			// translation to per-provider outbound forms (e.g. deepseek).
+			bifrostToolChoice.ResponsesToolChoiceStr = schemas.Ptr(string(schemas.ResponsesToolChoiceTypeRequired))
 		case "tool":
 			// Handle forced tool choice with specific function name
 			bifrostToolChoice.ResponsesToolChoiceStruct = &schemas.ResponsesToolChoiceStruct{

@@ -2914,8 +2914,8 @@ func TestSupportsEffortParameter(t *testing.T) {
 }
 
 // TestStripUnsupportedAnthropicFields_EffortGating exercises the typed path:
-// effort is removed for non-supporting models and the empty parent is cleaned
-// up; supporting models keep the effort value untouched.
+// output_config.effort is passed through unconditionally (pt-s2a: the
+// downstream gateway owns effort translation), regardless of model support.
 func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
 	highEffort := "high"
 	mediumEffort := "medium"
@@ -2928,13 +2928,13 @@ func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
 		wantOCNil  bool
 	}{
 		{
-			name:  "haiku 4.5 strips effort and drops empty output_config",
+			name:  "haiku 4.5 keeps effort",
 			model: "claude-haiku-4-5",
 			req: &AnthropicMessageRequest{
 				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
 			},
-			wantEffort: nil,
-			wantOCNil:  true,
+			wantEffort: &highEffort,
+			wantOCNil:  false,
 		},
 		{
 			name:  "opus 4.5 keeps effort (SupportsNativeEffort)",
@@ -2982,16 +2982,16 @@ func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
 			wantOCNil:  false,
 		},
 		{
-			name:  "sonnet 4.5 strips effort",
+			name:  "sonnet 4.5 keeps effort",
 			model: "claude-sonnet-4-5",
 			req: &AnthropicMessageRequest{
 				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
 			},
-			wantEffort: nil,
-			wantOCNil:  true,
+			wantEffort: &highEffort,
+			wantOCNil:  false,
 		},
 		{
-			name:  "haiku 4.5 strips effort but preserves sibling Format",
+			name:  "haiku 4.5 keeps effort with sibling format",
 			model: "claude-haiku-4-5",
 			req: &AnthropicMessageRequest{
 				OutputConfig: &AnthropicOutputConfig{
@@ -2999,7 +2999,7 @@ func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
 					Format: json.RawMessage(`{"type":"json_schema"}`),
 				},
 			},
-			wantEffort: nil,
+			wantEffort: &highEffort,
 			wantOCNil:  false,
 		},
 	}
@@ -3030,8 +3030,9 @@ func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
 }
 
 // TestStripUnsupportedFieldsFromRawBody_EffortGating exercises the raw-bytes
-// path. Same gating semantics as the typed path; verifies the JSON delete
-// also drops an empty output_config parent.
+// path. Same pass-through semantics as the typed path: output_config.effort
+// is kept unconditionally (pt-s2a: the downstream gateway owns effort
+// translation), regardless of model support.
 func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -3041,11 +3042,11 @@ func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
 		wantHasOCField bool
 	}{
 		{
-			name:           "haiku 4.5 strips effort and drops parent",
+			name:           "haiku 4.5 keeps effort",
 			model:          "claude-haiku-4-5",
 			body:           `{"model":"claude-haiku-4-5","output_config":{"effort":"high"}}`,
-			wantHasEffort:  false,
-			wantHasOCField: false,
+			wantHasEffort:  true,
+			wantHasOCField: true,
 		},
 		{
 			name:           "opus 4.5 keeps effort",
@@ -3069,18 +3070,18 @@ func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
 			wantHasOCField: true,
 		},
 		{
-			name:           "haiku 4.5 strips effort but keeps sibling format",
+			name:           "haiku 4.5 keeps effort with sibling format",
 			model:          "claude-haiku-4-5",
 			body:           `{"model":"claude-haiku-4-5","output_config":{"effort":"high","format":{"type":"json_schema"}}}`,
-			wantHasEffort:  false,
+			wantHasEffort:  true,
 			wantHasOCField: true,
 		},
 		{
-			name:           "model fallback - haiku 4.5 inferred from body when arg empty",
+			name:           "haiku 4.5 keeps effort (model inferred from body)",
 			model:          "",
 			body:           `{"model":"claude-haiku-4-5-20251001","output_config":{"effort":"high"}}`,
-			wantHasEffort:  false,
-			wantHasOCField: false,
+			wantHasEffort:  true,
+			wantHasOCField: true,
 		},
 	}
 

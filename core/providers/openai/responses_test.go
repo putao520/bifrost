@@ -318,6 +318,9 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 		effort   string
 		expected string
 	}{
+		// pt-s2a: effort is NEVER downgraded by model. The client's chosen
+		// level (xhigh/max) passes through verbatim regardless of model; only
+		// the literal "minimal"→"low" translation is kept.
 		{
 			name:     "preserves xhigh for gpt-5.4",
 			model:    "gpt-5.4",
@@ -361,22 +364,25 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "xhigh",
 		},
 		{
-			name:     "maps xhigh to high for gpt-5",
+			// previously downgraded xhigh→high; now passes through.
+			name:     "preserves xhigh for gpt-5 (no downgrade)",
 			model:    "gpt-5",
 			effort:   "xhigh",
-			expected: "high",
+			expected: "xhigh",
 		},
 		{
-			name:     "maps xhigh to high for gpt-5.1",
+			// previously downgraded xhigh→high; now passes through.
+			name:     "preserves xhigh for gpt-5.1 (no downgrade)",
 			model:    "gpt-5.1",
 			effort:   "xhigh",
-			expected: "high",
+			expected: "xhigh",
 		},
 		{
-			name:     "maps xhigh to high for gpt-5-pro",
+			// previously downgraded xhigh→high; now passes through.
+			name:     "preserves xhigh for gpt-5-pro (no downgrade)",
 			model:    "gpt-5-pro",
 			effort:   "xhigh",
-			expected: "high",
+			expected: "xhigh",
 		},
 		{
 			name:     "maps minimal to low",
@@ -385,20 +391,20 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "low",
 		},
 		{
-			name:     "maps max to xhigh for xhigh-capable model",
+			// previously downgraded max→xhigh; now passes through.
+			name:     "preserves max for xhigh-capable model (no downgrade)",
 			model:    "gpt-5.4",
 			effort:   "max",
-			expected: "xhigh",
+			expected: "max",
 		},
 		{
-			name:     "maps max to high for model without xhigh",
+			// previously downgraded max→high; now passes through.
+			name:     "preserves max for model without xhigh (no downgrade)",
 			model:    "gpt-5.1",
 			effort:   "max",
-			expected: "high",
+			expected: "max",
 		},
 		{
-			// DeepSeek V4 is routed via a custom OpenAI-compatible provider, so the
-			// OpenAI-only reasoning-stripping doesn't apply and "max" passes through.
 			name:     "preserves max for deepseek-v4-pro",
 			provider: schemas.ModelProvider("deepseek"),
 			model:    "deepseek-v4-pro",
@@ -420,7 +426,6 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "max",
 		},
 		{
-			// GLM-5.2 (Z.ai) natively supports "max" reasoning effort.
 			name:     "preserves max for glm-5.2",
 			provider: schemas.ModelProvider("zai"),
 			model:    "glm-5.2",

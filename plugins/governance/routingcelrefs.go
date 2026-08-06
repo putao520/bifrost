@@ -11,10 +11,11 @@ import (
 
 // Most routing variables are cheap: createCELEnvironment declares them,
 // extractRoutingVariables populates them, and evaluateCELExpression passes them
-// to CEL for evaluation. complexity_tier is different because populating it
-// means extracting text from the request body and running the complexity
-// analyzer (we dont have the value yet without these steps). Keep that work lazy by
-// first checking whether a CEL rule actually references the identifier.
+// to CEL for evaluation. complexity_tier, context_tokens, and message_count
+// are different because populating them means extracting text from the request
+// body and running the complexity analyzer / context-size estimator (we dont
+// have the value yet without these steps). Keep that work lazy by first
+// checking whether a CEL rule actually references the identifier.
 
 // Walk the parsed CEL AST instead of using strings.Contains so string literals
 // like "complexity_tier" and scoped macro variables do not accidentally trigger

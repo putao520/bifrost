@@ -286,16 +286,13 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			req.OutputConfig = nil
 		}
 	}
-	// output_config.effort — model-gated per
-	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
-	// outside the supported set return: "This model does not support the
-	// effort parameter."
-	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !SupportsEffortParameter(model) {
-		req.OutputConfig.Effort = nil
-		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
-			req.OutputConfig = nil
-		}
-	}
+	// output_config.effort — pass through unconditionally.
+	// pt-s2a: the downstream gateway (sub2api) owns effort translation for
+	// non-Claude models routed through an anthropic-typed provider (e.g. gpt-5.x
+	// via OpenAI conversion). The upstream model-gated check dropped effort for
+	// any model bifrost didn't recognize as effort-capable, so the client's
+	// effort never reached the downstream and it fell back to its default.
+	// Removing the gate lets effort flow through verbatim for all models.
 	if req.InferenceGeo != nil && !features.InferenceGeo {
 		req.InferenceGeo = nil
 	}
@@ -607,22 +604,9 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		}
 	}
 
-	// output_config.effort — model-gated per
-	// https://platform.claude.com/docs/en/build-with-claude/effort.
-	// Mirrors the typed path; same cleanup of an empty parent.
-	if providerUtils.JSONFieldExists(jsonBody, "output_config.effort") &&
-		!SupportsEffortParameter(model) {
-		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config.effort")
-		if err != nil {
-			return nil, fmt.Errorf("strip raw output_config.effort: %w", err)
-		}
-		if oc := providerUtils.GetJSONField(jsonBody, "output_config"); oc.IsObject() && len(oc.Map()) == 0 {
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config")
-			if err != nil {
-				return nil, fmt.Errorf("strip raw output_config: %w", err)
-			}
-		}
-	}
+	// output_config.effort — pass through unconditionally (pt-s2a).
+	// The downstream gateway owns effort translation for non-Claude models
+	// routed through an anthropic-typed provider; never strip it here.
 
 	// top-level cache_control.scope
 	if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, "cache_control.scope") {
@@ -889,6 +873,19 @@ func SupportsNativeEffort(model string) bool {
 // Source: https://platform.claude.com/docs/en/build-with-claude/effort
 func SupportsEffortParameter(model string) bool {
 	m := strings.ToLower(model)
+	// pt-s2a: OpenAI GPT-5.x models routed through an anthropic-typed provider
+	// (e.g. via a sub2api upstream doing Anthropic→OpenAI conversion) accept
+	// output_config.effort. Without this, bifrost strips the field before
+	// forwarding, so the downstream gateway never sees the client's effort
+	// and falls back to its default. Covers gpt-5 / gpt-5.2..5.6 variants
+	// (luna/terra/sol/mini/codex/...).
+	// pt-s2a: also pre-support gpt-6.x and composer3 (reasoning-capable, routed
+	// via anthropic-typed provider to a downstream gateway).
+	if strings.HasPrefix(m, "gpt-5") ||
+		strings.HasPrefix(m, "gpt-6") ||
+		strings.HasPrefix(m, "composer3") {
+		return true
+	}
 	if IsFableFamily(m) || IsSonnet5Plus(m) || IsOpus5Plus(m) {
 		return true
 	}
@@ -3281,15 +3278,32 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 		Type: formatType,
 	}
 
+	// Anthropic's output_format nests the schema under a "json_schema" object:
+	//   {"type":"json_schema","json_schema":{"name":...,"schema":{...},"strict":...}}
+	// Some callers send a flattened shape instead:
+	//   {"type":"json_schema","name":...,"schema":{...}}
+	// Resolve the json_schema sub-object once so name/schema/strict are read
+	// from the right place regardless of shape. Falls back to formatMap itself
+	// for the flattened form.
+	schemaSource := formatMap
+	if jsObj, ok := schemas.SafeExtractOrderedMap(formatMap["json_schema"]); ok {
+		schemaSource = jsObj.ToMap() // shallow: nested values stay ordered
+	}
+
 	// Extract name if present
-	if name, ok := formatMap["name"].(string); ok && strings.TrimSpace(name) != "" {
+	if name, ok := schemaSource["name"].(string); ok && strings.TrimSpace(name) != "" {
 		format.Name = schemas.Ptr(strings.TrimSpace(name))
 	} else {
 		format.Name = schemas.Ptr("output_format")
 	}
 
+	// Extract strict if present
+	if strict, ok := schemaSource["strict"].(bool); ok {
+		format.Strict = &strict
+	}
+
 	// Extract schema if present (an *OrderedMap after the ordered decode)
-	if schemaOrdered, ok := schemas.SafeExtractOrderedMap(formatMap["schema"]); ok {
+	if schemaOrdered, ok := schemas.SafeExtractOrderedMap(schemaSource["schema"]); ok {
 		schemaMap := schemaOrdered.ToMap() // shallow: nested values stay ordered
 		jsonSchema := &schemas.ResponsesTextConfigFormatJSONSchema{}
 

@@ -124,58 +124,28 @@ func isOpenAIReasoningModel(model string) bool {
 			return true
 		}
 	}
-	// Check for GPT-5 series models which support reasoning.effort
-	if strings.HasPrefix(modelLower, "gpt-5") {
+	// Check for GPT-5/GPT-6 series models which support reasoning.effort
+	// pt-s2a: also pre-support composer3 (reasoning-capable).
+	if strings.HasPrefix(modelLower, "gpt-5") ||
+		strings.HasPrefix(modelLower, "gpt-6") ||
+		strings.HasPrefix(modelLower, "composer3") {
 		return true
 	}
 	return false
 }
 
+// normalizeOpenAIReasoningEffort maps an effort level onto the OpenAI wire
+// vocabulary. pt-s2a: it NO LONGER downgrades by model — the client's chosen
+// effort (max/xhigh/high/...) is forwarded verbatim and the upstream is the
+// sole arbiter of what it accepts. Only the pure literal translation that the
+// OpenAI API does not understand is kept: "minimal" → "low".
 func normalizeOpenAIReasoningEffort(model string, effort string) string {
 	switch effort {
 	case "minimal":
 		return "low"
-	case "max":
-		if supportsMaxReasoningEffort(model) {
-			return effort
-		}
-		if supportsOpenAIXHighReasoningEffort(model) {
-			return "xhigh"
-		}
-		return "high"
-	case "xhigh":
-		if supportsOpenAIXHighReasoningEffort(model) {
-			return "xhigh"
-		}
-		return "high"
 	default:
 		return effort
 	}
-}
-
-func supportsOpenAIXHighReasoningEffort(model string) bool {
-	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
-	if parsedModel != "" {
-		model = parsedModel
-	}
-	modelLower := strings.ToLower(model)
-	return strings.HasPrefix(modelLower, "gpt-5.2") ||
-		strings.HasPrefix(modelLower, "gpt-5.3-codex") ||
-		strings.HasPrefix(modelLower, "gpt-5.4") ||
-		strings.HasPrefix(modelLower, "gpt-5.5") ||
-		strings.HasPrefix(modelLower, "gpt-5.6")
-}
-
-// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6, DeepSeek V4, GLM-5.2).
-func supportsMaxReasoningEffort(model string) bool {
-	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
-	if parsedModel != "" {
-		model = parsedModel
-	}
-	modelLower := strings.ToLower(model)
-	return strings.HasPrefix(modelLower, "gpt-5.6") ||
-		strings.HasPrefix(modelLower, "deepseek-v4") ||
-		strings.HasPrefix(modelLower, "glm-5.2")
 }
 
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field

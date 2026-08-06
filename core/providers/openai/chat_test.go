@@ -147,16 +147,18 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "xhigh",
 		},
 		{
-			name:     "maps xhigh to high for gpt-5.1",
+			// pt-s2a: no downgrade — xhigh passes through verbatim.
+			name:     "preserves xhigh for gpt-5.1 (no downgrade)",
 			model:    "gpt-5.1",
 			effort:   "xhigh",
-			expected: "high",
+			expected: "xhigh",
 		},
 		{
-			name:     "maps xhigh to high for gpt-5-pro",
+			// pt-s2a: no downgrade — xhigh passes through verbatim.
+			name:     "preserves xhigh for gpt-5-pro (no downgrade)",
 			model:    "gpt-5-pro",
 			effort:   "xhigh",
-			expected: "high",
+			expected: "xhigh",
 		},
 		{
 			name:     "maps minimal to low",
@@ -165,16 +167,18 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "low",
 		},
 		{
-			name:     "maps max to xhigh for xhigh-capable model",
+			// pt-s2a: no downgrade — max passes through verbatim.
+			name:     "preserves max for xhigh-capable model (no downgrade)",
 			model:    "gpt-5.4",
 			effort:   "max",
-			expected: "xhigh",
+			expected: "max",
 		},
 		{
-			name:     "maps max to high for model without xhigh",
+			// pt-s2a: no downgrade — max passes through verbatim.
+			name:     "preserves max for model without xhigh (no downgrade)",
 			model:    "gpt-5.1",
 			effort:   "max",
-			expected: "high",
+			expected: "max",
 		},
 		{
 			name:     "preserves max for deepseek-v4-pro",
@@ -253,30 +257,26 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 	}
 }
 
-// Vertex Model Garden MaaS models (gpt-oss, Qwen3, kimi-k2-thinking, minimax-m2)
-// reject reasoning_effort "none"; only minimal/low/medium/high are accepted. The
-// Vertex case should drop a "none" effort for these models while preserving it for
-// Mistral on Vertex (which does accept "none").
-func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
+// pt-s2a: the gateway never clears reasoning_effort by model — not even the
+// "none" literal that Vertex MaaS models reject. The client's intent must reach
+// the upstream verbatim; the upstream returns a clear error if "none" is
+// unsupported. This test now verifies "none" is preserved for all models.
+func TestToOpenAIChatRequest_VertexPreservesNoneReasoningEffort(t *testing.T) {
 	tests := []struct {
-		name        string
-		model       string
-		keepsEffort bool
+		name  string
+		model string
 	}{
 		{
-			name:        "MaaS model drops none effort",
-			model:       "moonshotai/kimi-k2-thinking-maas",
-			keepsEffort: false,
+			name:  "MaaS model preserves none effort",
+			model: "moonshotai/kimi-k2-thinking-maas",
 		},
 		{
-			name:        "minimax MaaS model drops none effort",
-			model:       "minimaxai/minimax-m2-maas",
-			keepsEffort: false,
+			name:  "minimax MaaS model preserves none effort",
+			model: "minimaxai/minimax-m2-maas",
 		},
 		{
-			name:        "Mistral on Vertex keeps none effort",
-			model:       "mistral-large",
-			keepsEffort: true,
+			name:  "Mistral on Vertex preserves none effort",
+			model: "mistral-large",
 		},
 	}
 
@@ -303,25 +303,18 @@ func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
 				t.Fatal("expected OpenAI chat request")
 			}
 
-			if tt.keepsEffort {
-				if out.Reasoning == nil || out.Reasoning.Effort == nil || *out.Reasoning.Effort != "none" {
-					t.Fatalf("expected reasoning effort to be preserved as \"none\", got %+v", out.Reasoning)
-				}
-				return
+			// Effort must be preserved as "none" — no model-gated clearing.
+			if out.Reasoning == nil || out.Reasoning.Effort == nil || *out.Reasoning.Effort != "none" {
+				t.Fatalf("expected reasoning effort to be preserved as \"none\", got %+v", out.Reasoning)
 			}
 
-			// Effort must be dropped so reasoning_effort is omitted from the payload.
-			if out.Reasoning != nil && out.Reasoning.Effort != nil {
-				t.Fatalf("expected reasoning effort to be dropped, got %q", *out.Reasoning.Effort)
-			}
-
-			// Verify the marshalled body does not contain reasoning_effort.
+			// Verify the marshalled body still carries reasoning_effort.
 			body, err := json.Marshal(out)
 			if err != nil {
 				t.Fatalf("failed to marshal request: %v", err)
 			}
-			if strings.Contains(string(body), "reasoning_effort") {
-				t.Fatalf("expected marshalled body to omit reasoning_effort, got %s", string(body))
+			if !strings.Contains(string(body), "reasoning_effort") {
+				t.Fatalf("expected marshalled body to carry reasoning_effort, got %s", string(body))
 			}
 		})
 	}
@@ -366,16 +359,18 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 			expected: "xhigh",
 		},
 		{
-			name:     "maps xhigh to high for gpt-5.1",
+			// pt-s2a: no downgrade — xhigh passes through verbatim.
+			name:     "preserves xhigh for gpt-5.1 (no downgrade)",
 			model:    "gpt-5.1",
 			effort:   "xhigh",
-			expected: "high",
+			expected: "xhigh",
 		},
 		{
-			name:     "maps xhigh to high for gpt-5-pro",
+			// pt-s2a: no downgrade — xhigh passes through verbatim.
+			name:     "preserves xhigh for gpt-5-pro (no downgrade)",
 			model:    "gpt-5-pro",
 			effort:   "xhigh",
-			expected: "high",
+			expected: "xhigh",
 		},
 		{
 			name:     "maps minimal to low",
@@ -384,16 +379,18 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 			expected: "low",
 		},
 		{
-			name:     "maps max to xhigh for xhigh-capable model",
+			// pt-s2a: no downgrade — max passes through verbatim.
+			name:     "preserves max for xhigh-capable model (no downgrade)",
 			model:    "gpt-5.4",
 			effort:   "max",
-			expected: "xhigh",
+			expected: "max",
 		},
 		{
-			name:     "maps max to high for model without xhigh",
+			// pt-s2a: no downgrade — max passes through verbatim.
+			name:     "preserves max for model without xhigh (no downgrade)",
 			model:    "gpt-5.1",
 			effort:   "max",
-			expected: "high",
+			expected: "max",
 		},
 		{
 			name:     "preserves max for deepseek-v4-pro",
@@ -899,12 +896,12 @@ func TestApplyXAICompatibility(t *testing.T) {
 					t.Errorf("Expected PresencePenalty to be cleared (nil), got %v", *req.PresencePenalty)
 				}
 
-				// reasoning_effort should be cleared for non-mini grok-3
-				if req.Reasoning == nil {
-					t.Fatal("Expected Reasoning to remain non-nil")
+				// pt-s2a: reasoning_effort is preserved for ALL grok models (no clearing).
+				if req.Reasoning == nil || req.Reasoning.Effort == nil {
+					t.Fatal("Expected Reasoning.Effort to be preserved for grok-3")
 				}
-				if req.Reasoning.Effort != nil {
-					t.Errorf("Expected Reasoning.Effort to be cleared (nil) for grok-3, got %v", *req.Reasoning.Effort)
+				if *req.Reasoning.Effort != "high" {
+					t.Errorf("Expected Reasoning.Effort to be 'high' for grok-3, got %v", *req.Reasoning.Effort)
 				}
 			},
 		},
@@ -979,12 +976,12 @@ func TestApplyXAICompatibility(t *testing.T) {
 					t.Errorf("Expected Stop to be cleared (nil) for grok-4, got %v", req.Stop)
 				}
 
-				// reasoning_effort should be cleared for grok-4
-				if req.Reasoning == nil {
-					t.Fatal("Expected Reasoning to remain non-nil")
+				// pt-s2a: reasoning_effort is preserved for grok-4 (no clearing).
+				if req.Reasoning == nil || req.Reasoning.Effort == nil {
+					t.Fatal("Expected Reasoning.Effort to be preserved for grok-4")
 				}
-				if req.Reasoning.Effort != nil {
-					t.Errorf("Expected Reasoning.Effort to be cleared (nil) for grok-4, got %v", *req.Reasoning.Effort)
+				if *req.Reasoning.Effort != "high" {
+					t.Errorf("Expected Reasoning.Effort to be 'high' for grok-4, got %v", *req.Reasoning.Effort)
 				}
 			},
 		},
@@ -1019,12 +1016,12 @@ func TestApplyXAICompatibility(t *testing.T) {
 					t.Errorf("Expected Stop to be cleared (nil), got %v", req.Stop)
 				}
 
-				// reasoning_effort should be cleared
-				if req.Reasoning == nil {
-					t.Fatal("Expected Reasoning to remain non-nil")
+				// pt-s2a: reasoning_effort is preserved (no clearing).
+				if req.Reasoning == nil || req.Reasoning.Effort == nil {
+					t.Fatal("Expected Reasoning.Effort to be preserved")
 				}
-				if req.Reasoning.Effort != nil {
-					t.Errorf("Expected Reasoning.Effort to be cleared (nil), got %v", *req.Reasoning.Effort)
+				if *req.Reasoning.Effort != "high" {
+					t.Errorf("Expected Reasoning.Effort to be 'high', got %v", *req.Reasoning.Effort)
 				}
 			},
 		},
@@ -1059,12 +1056,12 @@ func TestApplyXAICompatibility(t *testing.T) {
 					t.Errorf("Expected Stop to be cleared (nil), got %v", req.Stop)
 				}
 
-				// reasoning_effort should be cleared
-				if req.Reasoning == nil {
-					t.Fatal("Expected Reasoning to remain non-nil")
+				// pt-s2a: reasoning_effort is preserved (no clearing).
+				if req.Reasoning == nil || req.Reasoning.Effort == nil {
+					t.Fatal("Expected Reasoning.Effort to be preserved")
 				}
-				if req.Reasoning.Effort != nil {
-					t.Errorf("Expected Reasoning.Effort to be cleared (nil), got %v", *req.Reasoning.Effort)
+				if *req.Reasoning.Effort != "low" {
+					t.Errorf("Expected Reasoning.Effort to be 'low', got %v", *req.Reasoning.Effort)
 				}
 			},
 		},

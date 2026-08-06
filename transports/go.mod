@@ -2,6 +2,11 @@ module github.com/maximhq/bifrost/transports
 
 go 1.26.5
 
+// pt-s2a: use local core source so our patches (e.g. SupportsEffortParameter
+// gpt-5.x recognition) are compiled into the binary instead of pulling the
+// published core v1.7.4 from the proxy.
+replace github.com/maximhq/bifrost/core => ../core
+
 require (
 	github.com/andybalholm/brotli v1.2.2
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10

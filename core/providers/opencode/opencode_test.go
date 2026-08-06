@@ -1,9 +1,11 @@
 package opencode
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
 // Compile-time check that opencodeProvider satisfies the full Provider interface.
@@ -286,4 +288,180 @@ func TestOpencodeUnsupportedOperations(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestOpencodeCheckOperationAllowed verifies that the allowed_requests gating
+// (custom_provider_config.allowed_requests) is actually enforced for the
+// Responses family — previously opencode omitted CheckOperationAllowed entirely,
+// so a "responses: false" config was silently ignored.
+func TestOpencodeCheckOperationAllowed(t *testing.T) {
+	t.Parallel()
+
+	// Direct gating check: disabled -> unsupported_operation; enabled -> nil.
+	cases := []struct {
+		name    string
+		allowed bool
+	}{
+		{name: "responses disabled", allowed: false},
+		{name: "responses enabled", allowed: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &schemas.CustomProviderConfig{
+				BaseProviderType: "openai",
+				AllowedRequests: &schemas.AllowedRequests{
+					Responses:         tc.allowed,
+					ChatCompletion:    true,
+					ChatCompletionStream: true,
+				},
+			}
+			p := &opencodeProvider{providerKey: schemas.OpencodeGo, customProviderConfig: cfg}
+			err := providerUtils.CheckOperationAllowed(p.providerKey, p.customProviderConfig, schemas.ResponsesRequest)
+			if tc.allowed {
+				if err != nil {
+					t.Fatalf("expected nil (allowed), got %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected unsupported_operation (disabled), got nil")
+				}
+				if err.Error == nil || err.Error.Code == nil || *err.Error.Code != "unsupported_operation" {
+					t.Fatalf("expected unsupported_operation, got %+v", err)
+				}
+			}
+		})
+	}
+
+	// Integration: Responses() with responses disabled short-circuits to the
+	// unsupported error WITHOUT reaching ChatCompletion (no network / nil-ctx panic).
+	t.Run("Responses blocked end-to-end when disabled", func(t *testing.T) {
+		cfg := &schemas.CustomProviderConfig{
+			BaseProviderType: "openai",
+			AllowedRequests: &schemas.AllowedRequests{Responses: false, ChatCompletion: true},
+		}
+		p := &opencodeProvider{providerKey: schemas.OpencodeGo, customProviderConfig: cfg}
+		_, err := p.Responses(nil, schemas.Key{}, &schemas.BifrostResponsesRequest{})
+		if err == nil || err.Error == nil || err.Error.Code == nil || *err.Error.Code != "unsupported_operation" {
+			t.Fatalf("expected unsupported_operation from Responses(), got: %+v", err)
+		}
+		if err.ExtraFields.RequestType != schemas.ResponsesRequest {
+			t.Errorf("expected RequestType %s, got %s", schemas.ResponsesRequest, err.ExtraFields.RequestType)
+		}
+	})
+}
+
+// TestOpencodeCoerceStructuredOutputToTool verifies that a json_schema
+// text.format is converted to a function tool (and response_format stripped)
+// so the chat-only upstream no longer receives a response_format it rejects.
+func TestOpencodeCoerceStructuredOutputToTool(t *testing.T) {
+	t.Parallel()
+
+	p := &opencodeProvider{providerKey: schemas.OpencodeGo}
+
+	t.Run("json_schema converted to tool, response_format stripped", func(t *testing.T) {
+		schema := schemas.NewOrderedMapFromPairs(
+			schemas.KV("type", "object"),
+			schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+				schemas.KV("city", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+			)),
+			schemas.KV("required", []interface{}{"city"}),
+		)
+		req := &schemas.BifrostResponsesRequest{
+			Params: &schemas.ResponsesParameters{
+				Text: &schemas.ResponsesTextConfig{
+					Format: &schemas.ResponsesTextConfigFormat{
+						Type:   "json_schema",
+						Name:   schemas.Ptr("CityInfo"),
+						Strict: schemas.Ptr(true),
+						JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+							Schema: &schemas.JSONSchemaOrBool{SchemaMap: schema},
+						},
+					},
+				},
+			},
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		chatReq := req.ToChatRequest()
+		p.coerceStructuredOutputToTool(ctx, req, chatReq)
+
+		// response_format MUST be stripped (root cause of the 400).
+		if chatReq.Params.ResponseFormat != nil {
+			t.Fatalf("expected ResponseFormat to be nil after coercion, got %v", chatReq.Params.ResponseFormat)
+		}
+		// A function tool must be present.
+		if len(chatReq.Params.Tools) == 0 {
+			t.Fatal("expected at least one tool after coercion")
+		}
+		tool := chatReq.Params.Tools[len(chatReq.Params.Tools)-1]
+		if tool.Type != schemas.ChatToolTypeFunction || tool.Function == nil {
+			t.Fatalf("expected function tool, got type=%s function=%v", tool.Type, tool.Function)
+		}
+		if tool.Function.Name != "bf_so_CityInfo" {
+			t.Fatalf("expected tool name bf_so_CityInfo, got %s", tool.Function.Name)
+		}
+		// tool_choice must force the structured-output tool.
+		if chatReq.Params.ToolChoice == nil || chatReq.Params.ToolChoice.ChatToolChoiceStruct == nil {
+			t.Fatal("expected forced ToolChoice")
+		}
+		tc := chatReq.Params.ToolChoice.ChatToolChoiceStruct
+		if tc.Type != schemas.ChatToolChoiceTypeFunction || tc.Function == nil || tc.Function.Name != "bf_so_CityInfo" {
+			t.Fatalf("expected forced tool_choice for bf_so_CityInfo, got %+v", tc)
+		}
+		// ctx must carry the tool name for response-side restoration.
+		name, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
+		if name != "bf_so_CityInfo" {
+			t.Fatalf("expected ctx structured-output tool name bf_so_CityInfo, got %q", name)
+		}
+	})
+
+	t.Run("json_object left untouched", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{
+			Params: &schemas.ResponsesParameters{
+				Text: &schemas.ResponsesTextConfig{
+					Format: &schemas.ResponsesTextConfigFormat{Type: "json_object"},
+				},
+			},
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		chatReq := req.ToChatRequest()
+		p.coerceStructuredOutputToTool(ctx, req, chatReq)
+
+		// json_object is NOT json_schema, so coercion is a no-op: response_format
+		// stays set and no tool is added.
+		if chatReq.Params.ResponseFormat == nil {
+			t.Fatal("expected ResponseFormat to remain for json_object")
+		}
+		if len(chatReq.Params.Tools) != 0 {
+			t.Fatalf("expected no tools for json_object, got %d", len(chatReq.Params.Tools))
+		}
+	})
+
+	t.Run("reasoning skips forced tool_choice", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{
+			Params: &schemas.ResponsesParameters{
+				Text: &schemas.ResponsesTextConfig{
+					Format: &schemas.ResponsesTextConfigFormat{
+						Type: "json_schema",
+						Name: schemas.Ptr("X"),
+						JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+							Schema: &schemas.JSONSchemaOrBool{
+								SchemaMap: schemas.NewOrderedMapFromPairs(schemas.KV("type", "object")),
+							},
+						},
+					},
+				},
+				Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("medium")},
+			},
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		chatReq := req.ToChatRequest()
+		p.coerceStructuredOutputToTool(ctx, req, chatReq)
+
+		if chatReq.Params.ToolChoice != nil {
+			t.Fatalf("expected no forced ToolChoice when reasoning active, got %+v", chatReq.Params.ToolChoice)
+		}
+		if len(chatReq.Params.Tools) == 0 {
+			t.Fatal("expected the structured-output tool to still be added under reasoning")
+		}
+	})
 }

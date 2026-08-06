@@ -726,6 +726,34 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		}
 	}
 
+	// Set up lazy context-size estimation; only runs if a rule references
+	// context_tokens or message_count.
+	computeContextSize := func() *ContextSizeResult {
+		result, ok := buildContextSizeInput(req)
+		if !ok {
+			if p.logger != nil {
+				p.logger.Debug("[Governance] Context size estimation skipped: unsupported request type")
+			}
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Context size estimation skipped: no supported context-bearing input detected")
+			return nil
+		}
+
+		if p.logger != nil {
+			p.logger.Debug(
+				"[Governance] Context size estimation: tokens=%d messages=%d multimodal=%t",
+				result.EstimatedTokens,
+				result.MessageCount,
+				result.HasMultimodal,
+			)
+		}
+		ctx.AppendRoutingEngineLog(
+			schemas.RoutingEngineRoutingRule,
+			schemas.LogLevelInfo,
+			fmt.Sprintf("Context: tokens=%d messages=%d", result.EstimatedTokens, result.MessageCount),
+		)
+		return &result
+	}
+
 	routingCtx := &RoutingContext{
 		VirtualKey:               virtualKey,
 		UserID:                   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID),
@@ -736,6 +764,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		QueryParams:              queryParams,
 		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
 		computeComplexity:        computeComplexity,
+		computeContextTokens:     computeContextSize,
 	}
 
 	p.logger.Debug("[PreRequestHook] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v",

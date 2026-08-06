@@ -113,6 +113,27 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 		description: "Check budget usage as percentage. Checked against max of model and provider configs.",
 	},
 	{
+		name: "context_tokens",
+		label: "Context Size (tokens)",
+		placeholder: "e.g., 100000",
+		inputType: "text",
+		valueEditorType: "number",
+		operators: ["=", "!=", ">", "<", ">=", "<="],
+		defaultOperator: ">",
+		description:
+			"Estimated token count of the full request context (system prompt, all messages, and tools). Local estimate with a ~10% conservative margin — not a billing basis.",
+	},
+	{
+		name: "message_count",
+		label: "Message Count",
+		placeholder: "e.g., 20",
+		inputType: "text",
+		valueEditorType: "number",
+		operators: ["=", "!=", ">", "<", ">=", "<="],
+		defaultOperator: ">",
+		description: "Number of messages in the current request.",
+	},
+	{
 		name: "complexity_tier",
 		label: "Complexity Tier",
 		placeholder: "Select complexity tier",
