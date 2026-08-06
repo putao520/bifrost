@@ -964,10 +964,35 @@ func (bifrost *Bifrost) CountTokensRequest(ctx *schemas.BifrostContext, req *sch
 
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
+		// Fall back to a conservative local estimate when the provider does not
+		// support count_tokens (operation gated by allowed_requests or the
+		// provider returns unsupported_operation). Clients like Claude Code rely
+		// on count_tokens for context/token budget management, so a 400 here
+		// stops them outright; an overestimate only trims the budget, which is
+		// safe. Real provider failures (network errors, upstream 5xx) are
+		// surfaced as-is, never masked by the fallback.
+		if isUnsupportedOperationError(err) {
+			inputTokens := schemas.EstimateResponsesInputTokens(req)
+			totalTokens := inputTokens
+			return &schemas.BifrostCountTokensResponse{
+				Object:      "list",
+				Model:       req.Model,
+				InputTokens: inputTokens,
+				TotalTokens: &totalTokens,
+			}, nil
+		}
 		return nil, err
 	}
 
 	return response.CountTokensResponse, nil
+}
+
+// isUnsupportedOperationError reports whether err is an operation-gating or
+// unsupported-operation error (the "X is not supported by Y provider" shape
+// produced by CheckOperationAllowed and NewUnsupportedOperationError), as
+// opposed to a real provider failure.
+func isUnsupportedOperationError(err *schemas.BifrostError) bool {
+	return err != nil && err.Error != nil && err.Error.Code != nil && *err.Error.Code == "unsupported_operation"
 }
 
 // CompactionRequest compacts a conversation context window via providers that implement
