@@ -1854,3 +1854,68 @@ func DisableThinkingForForcedToolChoice(request *BifrostChatRequest) {
 	}
 	request.Params.ExtraParams["thinking"] = map[string]any{"type": "disabled"}
 }
+
+// DisableThinkingForForcedToolChoiceResponses is the Responses-API counterpart of
+// DisableThinkingForForcedToolChoice: thinking-mode-capable OpenAI-compatible
+// upstreams (e.g. opencode-backed deepseek reasoning models) reject a forced
+// tool_choice while thinking is enabled on /v1/responses exactly as on the chat
+// endpoint, so the same disable must be applied on the direct Responses path.
+//
+// The disable triggers are:
+//
+//  1. A forced tool_choice ("required"/"any", or the struct form pinning a
+//     function/allowed_tools/custom call) — rejected while thinking is enabled.
+//  2. A conversation that already contains an assistant input item without
+//     reasoning (synthetic/injected history, or a turn produced while thinking
+//     was off) — such upstreams require prior reasoning to be replayed once
+//     thinking is on, so thinking must stay off for the whole request.
+//
+// The injected "thinking" extra param is identical to the chat variant
+// ({"type":"disabled"}), merged into the outgoing body via ExtraParams
+// passthrough. ResponsesParameters.ExtraParams is copied into the OpenAI
+// request by ToOpenAIResponsesRequest, and ToChatRequest copies it as well, so
+// the injection survives both the direct and the chat-fallback path.
+func DisableThinkingForForcedToolChoiceResponses(request *BifrostResponsesRequest) {
+	if request == nil || request.Params == nil {
+		return
+	}
+
+	disable := false
+
+	if tc := request.Params.ToolChoice; tc != nil {
+		switch {
+		case tc.ResponsesToolChoiceStr != nil:
+			switch ResponsesToolChoiceType(*tc.ResponsesToolChoiceStr) {
+			case ResponsesToolChoiceTypeRequired, ResponsesToolChoiceTypeAny:
+				disable = true
+			}
+		case tc.ResponsesToolChoiceStruct != nil:
+			switch tc.ResponsesToolChoiceStruct.Type {
+			case ResponsesToolChoiceTypeRequired, ResponsesToolChoiceTypeAny,
+				ResponsesToolChoiceTypeFunction, ResponsesToolChoiceTypeAllowedTools,
+				ResponsesToolChoiceTypeCustom:
+				disable = true
+			}
+		}
+	}
+
+	if !disable {
+		for _, msg := range request.Input {
+			if msg.Role == nil || *msg.Role != ResponsesInputMessageRoleAssistant {
+				continue
+			}
+			if msg.ResponsesReasoning == nil {
+				disable = true
+				break
+			}
+		}
+	}
+
+	if !disable {
+		return
+	}
+	if request.Params.ExtraParams == nil {
+		request.Params.ExtraParams = make(map[string]any, 1)
+	}
+	request.Params.ExtraParams["thinking"] = map[string]any{"type": "disabled"}
+}
