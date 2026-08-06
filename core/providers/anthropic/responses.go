@@ -7238,6 +7238,11 @@ func convertAnthropicToolChoiceToBifrost(toolChoice *AnthropicToolChoice) *schem
 			bifrostToolChoice.ResponsesToolChoiceStr = schemas.Ptr(string(schemas.ResponsesToolChoiceTypeAny))
 		case "none":
 			bifrostToolChoice.ResponsesToolChoiceStr = schemas.Ptr(string(schemas.ResponsesToolChoiceTypeNone))
+		case "required":
+			// Anthropic tool_choice type "required" maps to the Responses API
+			// "required" (force-call semantics); the downstream gateway owns
+			// translation to per-provider outbound forms (e.g. deepseek).
+			bifrostToolChoice.ResponsesToolChoiceStr = schemas.Ptr(string(schemas.ResponsesToolChoiceTypeRequired))
 		case "tool":
 			// Handle forced tool choice with specific function name
 			bifrostToolChoice.ResponsesToolChoiceStruct = &schemas.ResponsesToolChoiceStruct{
