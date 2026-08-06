@@ -107,6 +107,15 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.filterOpenAISpecificParameters(capModel)
 		openaiReq.ChatParameters.Prediction = prediction
 		return openaiReq
+	case schemas.OpencodeGo, schemas.OpencodeZen:
+		// opencode's upstream is an OpenAI-style DeepSeek-dialect gateway
+		// (thinking {"type":...}, reasoning_content semantics). Mirror the
+		// DeepSeek branch's parameter filtering, but keep assistant
+		// reasoning_content: deepseek-v4 replays it across turns (verified
+		// against the live endpoint) and stripReasoningDetails is a legacy-model
+		// workaround that would break the dialect.
+		openaiReq.filterOpenAISpecificParameters(capModel)
+		return openaiReq
 	default:
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {

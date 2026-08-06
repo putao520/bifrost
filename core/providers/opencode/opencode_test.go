@@ -657,3 +657,132 @@ func TestOpencodeCoerceStructuredOutputToTool(t *testing.T) {
 		}
 	})
 }
+
+// TestOpencodeChatCompletion_DeepSeekDialectProtocol verifies the opencode
+// outbound conversion mirrors the built-in DeepSeek provider's dialect
+// handling: OpenAI-specific parameters are filtered, extra-param passthrough
+// is unconditionally on, and assistant reasoning_content is preserved
+// (deepseek-v4 replays it across turns; stripReasoningDetails is a
+// legacy-model workaround that must not apply to the opencode dialect).
+func TestOpencodeChatCompletion_DeepSeekDialectProtocol(t *testing.T) {
+	t.Parallel()
+
+	chatCompletionResponse := `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"repro-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+
+	// captureOpencodeRequest sends req through ChatCompletion against a local
+	// server and returns the decoded outgoing body.
+	captureOpencodeRequest := func(t *testing.T, req *schemas.BifrostChatRequest) map[string]any {
+		t.Helper()
+		var captured map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if err := json.Unmarshal(body, &captured); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, chatCompletionResponse)
+		}))
+		defer server.Close()
+
+		provider, err := NewOpencodeZenProvider(&schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		}, nil)
+		if err != nil {
+			t.Fatalf("NewOpencodeZenProvider: %v", err)
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, req); bifrostErr != nil {
+			t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
+		}
+		return captured
+	}
+
+	t.Run("OpenAI-specific params filtered", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.OpencodeZen,
+			Model:    "deepseek-v4-flash",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+			Params: &schemas.ChatParameters{
+				Store:                schemas.Ptr(true),
+				Prediction:           &schemas.ChatPrediction{Type: "content", Content: "pred"},
+				Verbosity:            schemas.Ptr("high"),
+				WebSearchOptions:     &schemas.ChatWebSearchOptions{SearchContextSize: schemas.Ptr("medium")},
+				PromptCacheKey:       schemas.Ptr("cache-1"),
+				PromptCacheRetention: schemas.Ptr("24h"),
+			},
+		}
+		captured := captureOpencodeRequest(t, req)
+		for _, key := range []string{"store", "prediction", "verbosity", "web_search_options", "prompt_cache_key", "prompt_cache_retention"} {
+			if _, ok := captured[key]; ok {
+				t.Errorf("expected %q filtered from outbound body, got %#v", key, captured)
+			}
+		}
+	})
+
+	t.Run("extra params passthrough always on", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.OpencodeZen,
+			Model:    "deepseek-v4-flash",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+			Params: &schemas.ChatParameters{
+				// No thinking injection: passthrough must be on regardless.
+				ExtraParams: map[string]interface{}{
+					"custom_dialect_param": "value-1",
+				},
+			},
+		}
+		captured := captureOpencodeRequest(t, req)
+		got, ok := captured["custom_dialect_param"]
+		if !ok {
+			t.Fatalf("expected extra param in outbound body (passthrough must be always on), got %#v", captured)
+		}
+		if got != "value-1" {
+			t.Fatalf("custom_dialect_param = %v, want value-1", got)
+		}
+	})
+
+	t.Run("assistant reasoning_content preserved", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.OpencodeZen,
+			Model:    "deepseek-v4-flash",
+			Input: []schemas.ChatMessage{
+				{
+					Role:    schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("previous answer")},
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						Reasoning: schemas.Ptr("previous reasoning trace"),
+					},
+				},
+				{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("continue")},
+				},
+			},
+		}
+		captured := captureOpencodeRequest(t, req)
+		messages, ok := captured["messages"].([]interface{})
+		if !ok {
+			t.Fatalf("expected messages array in outbound body, got %#v", captured)
+		}
+		for _, rawMsg := range messages {
+			msg, ok := rawMsg.(map[string]interface{})
+			if !ok || msg["role"] != "assistant" {
+				continue
+			}
+			if got, ok := msg["reasoning_content"].(string); !ok || got != "previous reasoning trace" {
+				t.Fatalf("expected reasoning_content %q preserved on assistant message, got %#v", "previous reasoning trace", msg)
+			}
+			return
+		}
+		t.Fatalf("no assistant message found in outbound body: %#v", messages)
+	})
+}
