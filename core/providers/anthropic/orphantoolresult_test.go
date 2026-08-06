@@ -119,10 +119,10 @@ func TestConvertBifrostMessages_OrphanToolResultBecomesUserText(t *testing.T) {
 			t.Fatalf("ConvertBifrostMessagesToAnthropicMessages() error = %v", err)
 		}
 
-		if !hasToolUse(msgs, "call_match") {
+		if !hasToolUse(msgs, "toolu_call_match") {
 			t.Fatal("expected a tool_use block for the matched call")
 		}
-		if !hasToolResult(msgs, "call_match") {
+		if !hasToolResult(msgs, "toolu_call_match") {
 			t.Fatal("expected a matched tool_result block (regression)")
 		}
 	})
@@ -140,7 +140,7 @@ func TestConvertBifrostMessages_OrphanToolResultBecomesUserText(t *testing.T) {
 			t.Fatalf("ConvertBifrostMessagesToAnthropicMessages() error = %v", err)
 		}
 
-		if !hasToolResult(msgs, "call_match") {
+		if !hasToolResult(msgs, "toolu_call_match") {
 			t.Fatal("expected matched output to remain a tool_result")
 		}
 		if hasToolResult(msgs, "toolu_orphan") {

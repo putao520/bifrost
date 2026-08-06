@@ -45,6 +45,14 @@ const ThoughtSignatureSeparator = "_ts_"
 // required tool_use/tool_result id charset (^[a-zA-Z0-9_-]+$).
 var anthropicUnsafeToolUseIDCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 
+// anthropicToolUseIDPrefix is the prefix Anthropic requires on tool_use and
+// tool_result ids. Claude Code validates it strictly and drops tool rounds whose
+// ids lack it, so every id Bifrost emits on an Anthropic response must carry it.
+// OpenAI-compatible upstreams (e.g. deepseek via opencode) emit and match their
+// own "call_..." ids, so the prefix is re-stripped on OpenAI outbound — see
+// StripAnthropicToolUseIDPrefix.
+const anthropicToolUseIDPrefix = "toolu_"
+
 // maxSanitizedAnthropicToolUseIDLen bounds the sanitized id length, matching the
 // 64-char cap this codebase already applies to tool identifiers elsewhere (e.g.
 // OpenAI's call_id, Bedrock's tool-name aliasing) so a long, non-conforming
@@ -52,18 +60,24 @@ var anthropicUnsafeToolUseIDCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 const maxSanitizedAnthropicToolUseIDLen = 64
 
 // SanitizeAnthropicToolUseID rewrites a tool_use/tool_result id to satisfy Anthropic's
-// ^[a-zA-Z0-9_-]+$ requirement. Some upstream providers (e.g. Kimi/Gemini-compatible
+// ^[a-zA-Z0-9_-]+$ requirement and to carry the mandatory "toolu_" prefix that Claude
+// Code strictly validates. Some upstream providers (e.g. Kimi/Gemini-compatible
 // backends) emit ids containing ':' or '.', which Anthropic's API rejects with a 400
 // when such a conversation is replayed through the Anthropic provider. The mapping is
 // deterministic (hash of the original id) so a tool_use id and its matching tool_result
 // id always sanitize to the same value within a request, matching the alias pattern
 // used for Bedrock tool names (see bedrockAliasToolName).
 func SanitizeAnthropicToolUseID(id string) string {
-	// The empty string doesn't match Anthropic's pattern either (it requires at
-	// least one character), so it needs the same hash-based rewrite as ids with
-	// disallowed characters rather than being passed through unchanged.
+	// Conforming ids still need the "toolu_" prefix: unprefixed ones get it added,
+	// already-prefixed ones pass through unchanged. The empty string doesn't match
+	// Anthropic's pattern either (it requires at least one character), so it needs
+	// the same hash-based rewrite as ids with disallowed characters rather than
+	// being passed through unchanged.
 	if id != "" && !anthropicUnsafeToolUseIDCharRegex.MatchString(id) {
-		return id
+		if strings.HasPrefix(id, anthropicToolUseIDPrefix) {
+			return id
+		}
+		return anthropicToolUseIDPrefix + id
 	}
 	// Use the full 64-bit hash (not a 32-bit truncation) to keep collisions
 	// between distinct ids astronomically unlikely, since two tool_use blocks
@@ -71,15 +85,16 @@ func SanitizeAnthropicToolUseID(id string) string {
 	hash := fmt.Sprintf("%016x", xxhash.Sum64String(id))
 	semantic := strings.Trim(anthropicUnsafeToolUseIDCharRegex.ReplaceAllString(id, "_"), "_")
 	if semantic == "" {
-		return hash
+		return anthropicToolUseIDPrefix + hash
 	}
-	if maxSemanticLen := maxSanitizedAnthropicToolUseIDLen - len(hash) - 1; len(semantic) > maxSemanticLen {
+	// Budget for the "toolu_" prefix so the final id still fits the 64-char cap.
+	if maxSemanticLen := maxSanitizedAnthropicToolUseIDLen - len(anthropicToolUseIDPrefix) - len(hash) - 1; len(semantic) > maxSemanticLen {
 		semantic = strings.Trim(semantic[:maxSemanticLen], "_")
 	}
 	if semantic == "" {
-		return hash
+		return anthropicToolUseIDPrefix + hash
 	}
-	return hash + "_" + semantic
+	return anthropicToolUseIDPrefix + hash + "_" + semantic
 }
 
 // SanitizeAnthropicToolUseIDPtr is SanitizeAnthropicToolUseID for an optional id.
@@ -90,6 +105,19 @@ func SanitizeAnthropicToolUseIDPtr(id *string) *string {
 	}
 	sanitized := SanitizeAnthropicToolUseID(*id)
 	return &sanitized
+}
+
+// StripAnthropicToolUseIDPrefix returns id without the leading "toolu_" prefix, or id
+// unchanged when it doesn't carry one. OpenAI-compatible upstreams (e.g. deepseek via
+// opencode) emit and match their own "call_..." ids, so the prefix added by
+// SanitizeAnthropicToolUseID for Claude Code must be removed again before a tool round
+// is forwarded upstream — otherwise the upstream cannot match a tool_result to the
+// tool_calls id it actually produced.
+func StripAnthropicToolUseIDPrefix(id string) string {
+	if strings.HasPrefix(id, anthropicToolUseIDPrefix) {
+		return id[len(anthropicToolUseIDPrefix):]
+	}
+	return id
 }
 
 // StripThoughtSignature returns the base tool-call ID without any embedded provider

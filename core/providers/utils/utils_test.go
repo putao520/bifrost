@@ -1955,17 +1955,25 @@ func TestSanitizeAnthropicToolUseID(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := SanitizeAnthropicToolUseID(tc.in)
 
-			// Anthropic's pattern requires at least one character, so an already-valid,
-			// non-empty id is the only case left unchanged; everything else (including
-			// the empty string) must be rewritten to a non-empty, conforming id.
+			// A conforming, non-empty id is never rewritten — only the mandatory "toolu_"
+			// prefix is added when missing (already-prefixed ids pass through unchanged).
+			// Everything else (including the empty string) must be rewritten to a
+			// non-empty, conforming, prefixed id.
 			if tc.in != "" && !anthropicUnsafeToolUseIDCharRegex.MatchString(tc.in) {
-				if got != tc.in {
-					t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, want unchanged", tc.in, got)
+				want := tc.in
+				if !strings.HasPrefix(want, anthropicToolUseIDPrefix) {
+					want = anthropicToolUseIDPrefix + want
+				}
+				if got != want {
+					t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, want %q", tc.in, got, want)
 				}
 				return
 			}
 			if got == "" {
 				t.Errorf("SanitizeAnthropicToolUseID(%q) = empty, want a non-empty conforming id", tc.in)
+			}
+			if !strings.HasPrefix(got, anthropicToolUseIDPrefix) {
+				t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, missing %q prefix", tc.in, got, anthropicToolUseIDPrefix)
 			}
 			if anthropicUnsafeToolUseIDCharRegex.MatchString(got) {
 				t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, still contains unsafe characters", tc.in, got)
@@ -1979,6 +1987,15 @@ func TestSanitizeAnthropicToolUseID(t *testing.T) {
 		})
 	}
 
+	// Conforming ids must gain the mandatory "toolu_" prefix; prefixed ids pass
+	// through unchanged.
+	if got := SanitizeAnthropicToolUseID("call_abc"); got != "toolu_call_abc" {
+		t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, want %q", "call_abc", got, "toolu_call_abc")
+	}
+	if got := SanitizeAnthropicToolUseID("toolu_abc"); got != "toolu_abc" {
+		t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, want unchanged", "toolu_abc", got)
+	}
+
 	// A tool_use id and its matching tool_result id must sanitize identically,
 	// since Anthropic requires them to reference the same value.
 	toolUseID := "functions.get_weather:0"
@@ -1990,6 +2007,29 @@ func TestSanitizeAnthropicToolUseID(t *testing.T) {
 	// still sanitize to distinct values (hash is computed on the original id).
 	if SanitizeAnthropicToolUseID("functions.Bash:0") == SanitizeAnthropicToolUseID("functions.Bash:1") {
 		t.Error("distinct tool ids sanitized to the same value")
+	}
+}
+
+func TestStripAnthropicToolUseIDPrefix(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"prefixed deepseek call id", "toolu_call_1", "call_1"},
+		{"prefixed anthropic id", "toolu_01Axyz", "01Axyz"},
+		{"bare prefix", "toolu_", ""},
+		{"no prefix", "call_1", "call_1"},
+		{"empty", "", ""},
+		{"prefix not at start", "srvtoolu_1", "srvtoolu_1"},
+		{"prefix-like elsewhere", "x_toolu_1", "x_toolu_1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := StripAnthropicToolUseIDPrefix(tc.in); got != tc.want {
+				t.Errorf("StripAnthropicToolUseIDPrefix(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

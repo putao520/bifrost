@@ -1400,6 +1400,119 @@ func TestToOpenAIChatRequest_PreservesShortToolCallIDsContainingSeparator(t *tes
 	}
 }
 
+// A tool round sourced from Claude Code carries Anthropic's "toolu_" prefix on both the
+// assistant tool_use id and the matching tool_result's tool_use_id. OpenAI-compatible
+// upstreams (e.g. deepseek) emit and match their own unprefixed "call_..." ids, so the
+// prefix must be stripped on the outbound wire while the caller's input is left intact.
+func TestToOpenAIChatRequest_StripsAnthropicToolUseIDPrefix(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:   schemas.Ptr("toolu_call_1"),
+						Type: schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      schemas.Ptr("search"),
+							Arguments: "{}",
+						},
+					}},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_call_1")},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("result")},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, req)
+	require.NotNil(t, result)
+
+	gotCallID := *result.Messages[0].OpenAIChatAssistantMessage.ToolCalls[0].ID
+	gotToolCallID := *result.Messages[1].ChatToolMessage.ToolCallID
+
+	if gotCallID != "call_1" {
+		t.Errorf("assistant tool call ID: got %q, want %q", gotCallID, "call_1")
+	}
+	if gotToolCallID != gotCallID {
+		t.Errorf("tool result ID %q must match assistant call ID %q", gotToolCallID, gotCallID)
+	}
+
+	// The caller's history must be untouched.
+	if *req.Input[0].ChatAssistantMessage.ToolCalls[0].ID != "toolu_call_1" {
+		t.Error("original assistant tool call ID was mutated")
+	}
+	if *req.Input[1].ChatToolMessage.ToolCallID != "toolu_call_1" {
+		t.Error("original tool result tool_call_id was mutated")
+	}
+}
+
+// Prefixed ids and over-long signature ids can coexist in one assistant message; the
+// converter must strip each independently (prefix unconditionally, signature only when
+// over-long) and only clone the caller's slice when a strip is actually needed.
+func TestToOpenAIChatRequest_StripsMixedPrefixedAndSignatureToolCallIDs(t *testing.T) {
+	sigID := "search" + providerUtils.ThoughtSignatureSeparator + strings.Repeat("B", 6000)
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							ID:       schemas.Ptr("toolu_call_1"),
+							Type:     schemas.Ptr("function"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("search"), Arguments: "{}"},
+						},
+						{
+							ID:       schemas.Ptr(sigID),
+							Type:     schemas.Ptr("function"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("search"), Arguments: "{}"},
+						},
+					},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_call_1")},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("r")},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, req)
+	require.NotNil(t, result)
+
+	got := result.Messages[0].OpenAIChatAssistantMessage.ToolCalls
+	if *got[0].ID != "call_1" {
+		t.Errorf("prefixed ID: got %q, want %q", *got[0].ID, "call_1")
+	}
+	if *got[1].ID != "search" {
+		t.Errorf("signature ID: got %q, want %q", *got[1].ID, "search")
+	}
+	if *result.Messages[1].ChatToolMessage.ToolCallID != "call_1" {
+		t.Errorf("tool_call_id: got %q, want %q", *result.Messages[1].ChatToolMessage.ToolCallID, "call_1")
+	}
+
+	// The caller's history must be untouched.
+	if *req.Input[0].ChatAssistantMessage.ToolCalls[0].ID != "toolu_call_1" {
+		t.Error("original prefixed assistant tool call ID was mutated")
+	}
+	if *req.Input[0].ChatAssistantMessage.ToolCalls[1].ID != sigID {
+		t.Error("original signature assistant tool call ID was mutated")
+	}
+}
+
 func TestOpenAIChatRequest_StripsCitationTextFromAnnotations(t *testing.T) {
 	req := &OpenAIChatRequest{
 		Model:    "gpt-4o",

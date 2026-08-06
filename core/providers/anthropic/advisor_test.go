@@ -274,8 +274,8 @@ func TestAdvisorResponse_RoundTripPreservesBlocks(t *testing.T) {
 	if serverToolName != "advisor" {
 		t.Errorf("server_tool_use name = %q, want advisor", serverToolName)
 	}
-	if advisorToolUseID != "srvtoolu_01WJ" {
-		t.Errorf("advisor_tool_result tool_use_id = %q, want srvtoolu_01WJ", advisorToolUseID)
+	if advisorToolUseID != "toolu_srvtoolu_01WJ" {
+		t.Errorf("advisor_tool_result tool_use_id = %q, want toolu_srvtoolu_01WJ", advisorToolUseID)
 	}
 	if advisorText != "Use a channel-based coordination pattern." {
 		t.Errorf("advisor text not preserved through round-trip: %q", advisorText)

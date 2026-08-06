@@ -138,7 +138,7 @@ func TestCodeExecution_BashResponseRoundTrip(t *testing.T) {
 	if serverToolName != "bash_code_execution" {
 		t.Errorf("server_tool_use name = %q, want bash_code_execution", serverToolName)
 	}
-	if resultToolUseID != "srvtoolu_01D6DLT2QGNjMqGAai9EgcrM" {
+	if resultToolUseID != "toolu_srvtoolu_01D6DLT2QGNjMqGAai9EgcrM" {
 		t.Errorf("result tool_use_id = %q", resultToolUseID)
 	}
 	if innerType != "bash_code_execution_result" {
@@ -683,11 +683,11 @@ func TestCodeExecution_ProgrammaticCallerRoundTrip(t *testing.T) {
 		return true
 	})
 
-	if wsCallerToolID != "srvtoolu_code1" {
-		t.Errorf("web_search server_tool_use caller.tool_id = %q, want srvtoolu_code1\n%s", wsCallerToolID, out)
+	if wsCallerToolID != "toolu_srvtoolu_code1" {
+		t.Errorf("web_search server_tool_use caller.tool_id = %q, want toolu_srvtoolu_code1\n%s", wsCallerToolID, out)
 	}
-	if wsResultCallerToolID != "srvtoolu_code1" {
-		t.Errorf("web_search_tool_result caller.tool_id = %q, want srvtoolu_code1", wsResultCallerToolID)
+	if wsResultCallerToolID != "toolu_srvtoolu_code1" {
+		t.Errorf("web_search_tool_result caller.tool_id = %q, want toolu_srvtoolu_code1", wsResultCallerToolID)
 	}
 }
 
@@ -928,10 +928,10 @@ func TestCodeExecution_ProgrammaticStreamRoundTrip(t *testing.T) {
 	if !strings.Contains(inputByIndex[wsIdx], "AAPL stock price") {
 		t.Errorf("web_search query not streamed (got %q)", inputByIndex[wsIdx])
 	}
-	if callerByIndex[wsIdx] != "srv_code" {
-		t.Errorf("web_search server_tool_use caller = %q, want srv_code", callerByIndex[wsIdx])
+	if callerByIndex[wsIdx] != "toolu_srv_code" {
+		t.Errorf("web_search server_tool_use caller = %q, want toolu_srv_code", callerByIndex[wsIdx])
 	}
-	if wsResultCaller != "srv_code" {
-		t.Errorf("web_search_tool_result caller = %q, want srv_code", wsResultCaller)
+	if wsResultCaller != "toolu_srv_code" {
+		t.Errorf("web_search_tool_result caller = %q, want toolu_srv_code", wsResultCaller)
 	}
 }

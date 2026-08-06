@@ -41,26 +41,40 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 			Content:         message.Content,
 			ChatToolMessage: message.ChatToolMessage,
 		}
-		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures embedded in
-		// call_id as "<baseID>_ts_<sig>") from the tool result's tool_call_id, but only when it
-		// exceeds OpenAI's limit — shorter IDs are left intact so distinct upstream IDs are
-		// preserved. Clone first — ChatToolMessage is shared with the caller's input.
-		if message.ChatToolMessage != nil && message.ChatToolMessage.ToolCallID != nil &&
-			len(*message.ChatToolMessage.ToolCallID) > MaxToolCallIDLength {
-			if stripped := utils.StripThoughtSignature(*message.ChatToolMessage.ToolCallID); stripped != *message.ChatToolMessage.ToolCallID {
+		// The "toolu_" prefix added for Claude Code (see SanitizeAnthropicToolUseID) is
+		// meaningless to OpenAI-compatible upstreams and must be stripped first so a
+		// tool_result matches the tool_calls id the upstream actually emitted (e.g.
+		// deepseek's "call_..."). Then strip provider reasoning signatures (e.g. Gemini
+		// thoughtSignatures embedded in call_id as "<baseID>_ts_<sig>") from the tool
+		// result's tool_call_id, but only when it exceeds OpenAI's limit — shorter IDs are
+		// left intact so distinct upstream IDs are preserved. Clone first — ChatToolMessage
+		// is shared with the caller's input.
+		if message.ChatToolMessage != nil && message.ChatToolMessage.ToolCallID != nil {
+			current := *message.ChatToolMessage.ToolCallID
+			stripped := utils.StripAnthropicToolUseIDPrefix(current)
+			if len(stripped) > MaxToolCallIDLength {
+				stripped = utils.StripThoughtSignature(stripped)
+			}
+			if stripped != current {
 				toolMsgCopy := *message.ChatToolMessage
 				toolMsgCopy.ToolCallID = &stripped
 				openaiMessages[i].ChatToolMessage = &toolMsgCopy
 			}
 		}
 		if message.ChatAssistantMessage != nil {
-			// Strip the same embedded signature from over-long assistant tool call IDs. Clone the
-			// slice only when a strip is actually needed so the caller's input is never mutated.
+			// Strip the toolu_ prefix from every assistant tool call ID (see the tool result
+			// block above), plus the embedded reasoning signature from over-long IDs. Clone
+			// the slice only when a strip is actually needed so the caller's input is never
+			// mutated.
 			toolCalls := message.ChatAssistantMessage.ToolCalls
 			needsStrip := false
 			for j := range toolCalls {
-				if toolCalls[j].ID != nil && len(*toolCalls[j].ID) > MaxToolCallIDLength &&
-					strings.Contains(*toolCalls[j].ID, utils.ThoughtSignatureSeparator) {
+				if toolCalls[j].ID == nil {
+					continue
+				}
+				id := *toolCalls[j].ID
+				if utils.StripAnthropicToolUseIDPrefix(id) != id ||
+					(len(id) > MaxToolCallIDLength && strings.Contains(id, utils.ThoughtSignatureSeparator)) {
 					needsStrip = true
 					break
 				}
@@ -69,8 +83,14 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 				cloned := make([]schemas.ChatAssistantMessageToolCall, len(toolCalls))
 				copy(cloned, toolCalls)
 				for j := range cloned {
-					if cloned[j].ID != nil && len(*cloned[j].ID) > MaxToolCallIDLength {
-						stripped := utils.StripThoughtSignature(*cloned[j].ID)
+					if cloned[j].ID == nil {
+						continue
+					}
+					stripped := utils.StripAnthropicToolUseIDPrefix(*cloned[j].ID)
+					if len(stripped) > MaxToolCallIDLength {
+						stripped = utils.StripThoughtSignature(stripped)
+					}
+					if stripped != *cloned[j].ID {
 						cloned[j].ID = &stripped
 					}
 				}
