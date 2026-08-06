@@ -211,6 +211,18 @@ type anthropicToResponsesStreamState struct {
 	// Code can't carry and never spawns nested blocks, so it is left open here and
 	// closed at output_item.done from the verbatim carry input instead.
 	codeExecServerClosedByItem map[string]bool
+
+	// thinkingTextByOutput accumulates the reasoning text streamed per output
+	// index, so a missing upstream signature_delta (upstreams without Anthropic's
+	// signature concept never emit one) can be synthesised at output_item.done
+	// from the full text.
+	thinkingTextByOutput map[int]*strings.Builder
+
+	// thinkingSignatureSent records, per output index, whether a signature_delta
+	// was already emitted for that thinking block (from an upstream signature or
+	// a synthetic one injected at output_item.done). Guards against emitting two
+	// signature_delta events for one block, which strict clients reject.
+	thinkingSignatureSent map[int]bool
 }
 
 // allocBlockIndex assigns and returns the next Anthropic content-block index. A
@@ -2823,8 +2835,9 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		}
 
 	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+		state := getOrCreateAnthropicToResponsesStreamState(ctx)
 		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
-		streamResp.Index = getOrCreateAnthropicToResponsesStreamState(ctx).blockIndexFor(reverseStreamItemKey(bifrostResp))
+		streamResp.Index = state.blockIndexFor(reverseStreamItemKey(bifrostResp))
 
 		// Check if this is a signature delta or text delta
 		if bifrostResp.Signature != nil {
@@ -2833,11 +2846,32 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				Type:      AnthropicStreamDeltaTypeSignature,
 				Signature: bifrostResp.Signature,
 			}
+			// A real signature arrived; output_item.done must not synthesise
+			// another one for this thinking block.
+			if bifrostResp.OutputIndex != nil {
+				if state.thinkingSignatureSent == nil {
+					state.thinkingSignatureSent = make(map[int]bool)
+				}
+				state.thinkingSignatureSent[*bifrostResp.OutputIndex] = true
+			}
 		} else if bifrostResp.Delta != nil {
-			// This is a thinking_delta
+			// This is a thinking_delta — accumulate the text so a missing
+			// signature can be derived from the full thinking content at
+			// output_item.done.
 			streamResp.Delta = &AnthropicStreamDelta{
 				Type:     AnthropicStreamDeltaTypeThinking,
 				Thinking: bifrostResp.Delta,
+			}
+			if bifrostResp.OutputIndex != nil {
+				if state.thinkingTextByOutput == nil {
+					state.thinkingTextByOutput = make(map[int]*strings.Builder)
+				}
+				b := state.thinkingTextByOutput[*bifrostResp.OutputIndex]
+				if b == nil {
+					b = &strings.Builder{}
+					state.thinkingTextByOutput[*bifrostResp.OutputIndex] = b
+				}
+				b.WriteString(*bifrostResp.Delta)
 			}
 		}
 
@@ -3134,6 +3168,43 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			// For text blocks and other content blocks, emit content_block_stop
 			streamResp.Type = AnthropicStreamEventTypeContentBlockStop
 			streamResp.Index = getOrCreateAnthropicToResponsesStreamState(ctx).blockIndexFor(reverseStreamItemKey(bifrostResp))
+
+			// Thinking blocks must deliver a signature_delta before
+			// content_block_stop. Upstreams without Anthropic's signature concept
+			// (deepseek reasoning_content etc.) never emit one, and strict clients
+			// (Claude Code interactive with beta validation) abort the stream when
+			// it is missing — so synthesise one from the accumulated thinking text
+			// when no real signature arrived.
+			if bifrostResp.Item != nil && bifrostResp.Item.Type != nil &&
+				*bifrostResp.Item.Type == schemas.ResponsesMessageTypeReasoning {
+				state := getOrCreateAnthropicToResponsesStreamState(ctx)
+				signatureSent := false
+				if bifrostResp.OutputIndex != nil && state.thinkingSignatureSent != nil {
+					signatureSent = state.thinkingSignatureSent[*bifrostResp.OutputIndex]
+					delete(state.thinkingSignatureSent, *bifrostResp.OutputIndex)
+				}
+				if !signatureSent {
+					thinkingText := ""
+					if bifrostResp.OutputIndex != nil && state.thinkingTextByOutput != nil {
+						if b := state.thinkingTextByOutput[*bifrostResp.OutputIndex]; b != nil {
+							thinkingText = b.String()
+							delete(state.thinkingTextByOutput, *bifrostResp.OutputIndex)
+						}
+					}
+					sig := generateThinkingSignature(thinkingText)
+					return []*AnthropicStreamEvent{
+						{
+							Type:  AnthropicStreamEventTypeContentBlockDelta,
+							Index: streamResp.Index,
+							Delta: &AnthropicStreamDelta{
+								Type:      AnthropicStreamDeltaTypeSignature,
+								Signature: &sig,
+							},
+						},
+						streamResp,
+					}
+				}
+			}
 		}
 	case schemas.ResponsesStreamResponseTypeWebSearchCallInProgress,
 		schemas.ResponsesStreamResponseTypeWebSearchCallSearching,
@@ -3321,7 +3392,6 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 // ToBifrostResponsesRequest converts an Anthropic message request to Bifrost format
 func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
 	provider, model := schemas.ParseModelString(req.Model, "")
-
 
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider:  provider,
@@ -5983,11 +6053,14 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
-				// signature is required by the Agent SDK; converted (non-Anthropic) reasoning
-				// has none, so default to empty rather than omitting the field.
+				// signature is required by the Agent SDK; converted (non-Anthropic)
+				// reasoning has none, so default to a deterministic pseudo-signature
+				// derived from the text instead of omitting the field or sending an
+				// empty one (strict clients reject empty signatures).
 				signature := block.Signature
-				if signature == nil {
-					signature = schemas.Ptr("")
+				if signature == nil || *signature == "" {
+					sig := generateThinkingSignature(*block.Text)
+					signature = &sig
 				}
 				thinkingBlock := AnthropicContentBlock{
 					Type:      AnthropicContentBlockTypeThinking,
@@ -6005,10 +6078,13 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 		// encrypted payload from the replayed request.
 		if len(msg.ResponsesReasoning.Summary) > 0 {
 			for _, reasoningContent := range msg.ResponsesReasoning.Summary {
+				// required by the Agent SDK; converted reasoning has no signature,
+				// so derive a deterministic pseudo-signature from the text.
+				sig := generateThinkingSignature(reasoningContent.Text)
 				thinkingBlock := AnthropicContentBlock{
 					Type:      AnthropicContentBlockTypeThinking,
 					Thinking:  &reasoningContent.Text,
-					Signature: schemas.Ptr(""), // required by the Agent SDK; converted reasoning has no signature
+					Signature: &sig,
 				}
 				thinkingBlocks = append(thinkingBlocks, thinkingBlock)
 			}

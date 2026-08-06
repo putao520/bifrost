@@ -799,9 +799,22 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						})
 						continue
 					}
+					// Thinking blocks replayed to the upstream must carry a
+					// non-empty signature; absent one (converted reasoning from
+					// providers without a signature concept), derive a
+					// deterministic pseudo-signature from the text.
+					signature := reasoningDetail.Signature
+					if signature == nil || *signature == "" {
+						thinkingText := ""
+						if reasoningDetail.Text != nil {
+							thinkingText = *reasoningDetail.Text
+						}
+						sig := generateThinkingSignature(thinkingText)
+						signature = &sig
+					}
 					content = append(content, AnthropicContentBlock{
 						Type:      AnthropicContentBlockTypeThinking,
-						Signature: reasoningDetail.Signature,
+						Signature: signature,
 						Thinking:  reasoningDetail.Text,
 					})
 				}
@@ -984,11 +997,24 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 					})
 				}
 			case AnthropicContentBlockTypeThinking:
+				// Upstreams without an Anthropic signature concept carry no
+				// signature; downstream strict clients (Claude Code) reject empty
+				// thinking signatures, so default to a deterministic
+				// pseudo-signature derived from the thinking text.
+				signature := c.Signature
+				if signature == nil || *signature == "" {
+					thinkingText := ""
+					if c.Thinking != nil {
+						thinkingText = *c.Thinking
+					}
+					sig := generateThinkingSignature(thinkingText)
+					signature = &sig
+				}
 				reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
 					Index:     len(reasoningDetails),
 					Type:      schemas.BifrostReasoningDetailsTypeText,
 					Text:      c.Thinking,
-					Signature: c.Signature,
+					Signature: signature,
 				})
 				if c.Thinking != nil {
 					reasoningText += *c.Thinking + "\n"
@@ -1202,10 +1228,18 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 				if reasoningDetail.Type == schemas.BifrostReasoningDetailsTypeText && reasoningDetail.Text != nil &&
 					((reasoningDetail.Text != nil && *reasoningDetail.Text != "") ||
 						(reasoningDetail.Signature != nil && *reasoningDetail.Signature != "")) {
+					// Converted (non-Anthropic) reasoning carries no signature;
+					// strict clients reject empty thinking signatures, so derive
+					// a deterministic pseudo-signature from the text.
+					signature := reasoningDetail.Signature
+					if signature == nil || *signature == "" {
+						sig := generateThinkingSignature(*reasoningDetail.Text)
+						signature = &sig
+					}
 					content = append(content, AnthropicContentBlock{
 						Type:      AnthropicContentBlockTypeThinking,
 						Thinking:  reasoningDetail.Text,
-						Signature: reasoningDetail.Signature,
+						Signature: signature,
 					})
 				}
 			}
@@ -1281,6 +1315,18 @@ type AnthropicStreamState struct {
 	// payload on replay.
 	reasoningDetailIdxByBlock map[int]int
 	nextReasoningDetailIdx    int
+
+	// thinkingBlockByIndex marks content-block indices whose block is a
+	// thinking block (opened via content_block_start), so content_block_stop
+	// can synthesise a missing signature_delta.
+	thinkingBlockByIndex map[int]bool
+	// thinkingTextByBlock accumulates thinking text per content-block index,
+	// feeding the synthesised signature (deterministic on the full text).
+	thinkingTextByBlock map[int]*strings.Builder
+	// signatureSeenByBlock records, per content-block index, whether a
+	// signature_delta was received for the thinking block; only blocks without
+	// one get a synthesised signature.
+	signatureSeenByBlock map[int]bool
 }
 
 // NewAnthropicStreamState returns an initialised stream state for one streaming response.
@@ -1289,6 +1335,9 @@ func NewAnthropicStreamState() *AnthropicStreamState {
 		contentBlockToToolCallIdx: make(map[int]int),
 		sawArgsDelta:              make(map[int]bool),
 		reasoningDetailIdxByBlock: make(map[int]int),
+		thinkingBlockByIndex:      make(map[int]bool),
+		thinkingTextByBlock:       make(map[int]*strings.Builder),
+		signatureSeenByBlock:      make(map[int]bool),
 	}
 }
 
@@ -1314,6 +1363,15 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 	}
 	if state.sawArgsDelta == nil {
 		state.sawArgsDelta = make(map[int]bool)
+	}
+	if state.thinkingBlockByIndex == nil {
+		state.thinkingBlockByIndex = make(map[int]bool)
+	}
+	if state.thinkingTextByBlock == nil {
+		state.thinkingTextByBlock = make(map[int]*strings.Builder)
+	}
+	if state.signatureSeenByBlock == nil {
+		state.signatureSeenByBlock = make(map[int]bool)
 	}
 
 	switch chunk.Type {
@@ -1415,6 +1473,11 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 				}, nil, false
 
 			default:
+				// Remember thinking blocks so content_block_stop can synthesise a
+				// missing signature_delta for them.
+				if chunk.ContentBlock.Type == AnthropicContentBlockTypeThinking {
+					state.thinkingBlockByIndex[*chunk.Index] = true
+				}
 				return nil, nil, false
 			}
 		}
@@ -1493,6 +1556,15 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 				// Handle thinking content streaming
 				if chunk.Delta.Thinking != nil && *chunk.Delta.Thinking != "" {
 					thinkingText := *chunk.Delta.Thinking
+					// Accumulate the thinking text so content_block_stop can
+					// synthesise a deterministic signature when the upstream sends
+					// no signature_delta.
+					b := state.thinkingTextByBlock[*chunk.Index]
+					if b == nil {
+						b = &strings.Builder{}
+						state.thinkingTextByBlock[*chunk.Index] = b
+					}
+					b.WriteString(thinkingText)
 					// Create streaming response for thinking delta
 					streamResponse := &schemas.BifrostChatResponse{
 						Object: "chat.completion.chunk",
@@ -1520,6 +1592,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 
 			case AnthropicStreamDeltaTypeSignature:
 				if chunk.Delta.Signature != nil && *chunk.Delta.Signature != "" {
+					// A real signature arrived; content_block_stop must not
+					// synthesise another one for this thinking block.
+					state.signatureSeenByBlock[*chunk.Index] = true
 					// Create streaming response for signature delta
 					streamResponse := &schemas.BifrostChatResponse{
 						Object: "chat.completion.chunk",
@@ -1580,6 +1655,46 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 					},
 				}, nil, false
 			}
+		}
+
+		// A thinking block that never delivered a signature_delta (upstream
+		// without Anthropic's signature concept, e.g. deepseek reasoning) must
+		// still close with a signature: strict clients abort the stream when
+		// content_block_stop arrives without one. Synthesise it deterministically
+		// from the accumulated thinking text, mirroring the chunk shape of a
+		// real signature_delta (same reasoning_detail index as the thinking
+		// deltas of this block).
+		if chunk.Index != nil && state.thinkingBlockByIndex[*chunk.Index] && !state.signatureSeenByBlock[*chunk.Index] {
+			thinkingText := ""
+			if b, ok := state.thinkingTextByBlock[*chunk.Index]; ok {
+				thinkingText = b.String()
+			}
+			sig := generateThinkingSignature(thinkingText)
+			return &schemas.BifrostChatResponse{
+				Object: "chat.completion.chunk",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
+								ReasoningDetails: []schemas.ChatReasoningDetails{
+									{
+										Index:     state.reasoningDetailIndex(*chunk.Index),
+										Type:      schemas.BifrostReasoningDetailsTypeText,
+										Signature: &sig,
+									},
+								},
+							},
+						},
+					},
+				},
+			}, nil, false
+		}
+		// Tear down per-block tracking for the closed block.
+		if chunk.Index != nil {
+			delete(state.thinkingBlockByIndex, *chunk.Index)
+			delete(state.signatureSeenByBlock, *chunk.Index)
+			delete(state.thinkingTextByBlock, *chunk.Index)
 		}
 		return nil, nil, false
 

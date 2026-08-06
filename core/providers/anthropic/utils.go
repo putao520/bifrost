@@ -3,6 +3,8 @@ package anthropic
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -3650,4 +3652,23 @@ func ResolveUseAnthropicEndpoints(ctx *schemas.BifrostContext, key schemas.Key) 
 		return *ra.Config.UseAnthropicEndpoints
 	}
 	return key.UseAnthropicEndpoints != nil && *key.UseAnthropicEndpoints
+}
+
+// generateThinkingSignature produces a deterministic pseudo-signature for an
+// Anthropic thinking block. Upstreams without Anthropic's signature concept
+// (deepseek reasoning_content, etc.) leave thinking signatures empty, and
+// strict Anthropic clients (Claude Code interactive with beta validation)
+// reject empty signatures: non-streaming responses must carry a non-empty
+// signature on every thinking block, and streaming responses must deliver a
+// signature_delta before content_block_stop. Clients only check presence and
+// format (verifying authenticity requires Anthropic's public key), so a stable
+// hash of the thinking text satisfies the protocol contract while keeping
+// identical text → identical signature. Empty text falls back to a fixed salt
+// so the result is never empty.
+func generateThinkingSignature(text string) string {
+	if text == "" {
+		text = "bifrost:empty-thinking"
+	}
+	sum := sha256.Sum256([]byte("bifrost:" + text))
+	return base64.StdEncoding.EncodeToString(sum[:])
 }
