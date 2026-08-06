@@ -1775,6 +1775,17 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	}
 	s.MCPServerHandler = mcpServerHandler
 	asyncHandler := handlers.NewAsyncHandler(s.Client, s.Config)
+	// Claude Code (Bun runtime) probes POST/HEAD /anthropic/api/hello at
+	// startup to detect a compatible Anthropic gateway; a non-200 makes the
+	// client treat the gateway as incomplete and degrade agent/tooling
+	// behavior. Respond 200 with an empty body for both methods.
+	s.Router.HEAD("/anthropic/api/hello", func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusOK)
+	})
+	s.Router.POST("/anthropic/api/hello", func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusOK)
+	})
+
 	s.IntegrationHandler.RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	asyncHandler.RegisterRoutes(s.Router, middlewares...)
