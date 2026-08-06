@@ -1793,3 +1793,64 @@ type VideoResult struct {
 	ThumbnailHeight *int     `json:"thumbnail_height,omitempty"`
 	Duration        *float64 `json:"duration,omitempty"`
 }
+
+// DisableThinkingForForcedToolChoice disables thinking when it would otherwise be
+// rejected by an OpenAI-compatible endpoint that supports thinking (DeepSeek,
+// opencode-style providers, etc.). This covers two distinct cases:
+//
+//  1. A forced tool_choice ("required"/"any", or the struct form pinning a specific
+//     function/custom/allowed_tools call) — such endpoints reject a forced
+//     tool_choice while thinking is enabled (the default).
+//  2. A conversation that already contains an assistant turn without reasoning
+//     (e.g. synthetic/injected history, or a turn produced while thinking was off) —
+//     they require prior reasoning to be replayed once thinking is on, so if any
+//     assistant turn is missing it, thinking must stay off for the whole request.
+//
+// When a disable is needed, the "thinking" extra param is injected into
+// request.Params.ExtraParams, which ChatParameters' custom MarshalJSON merges into
+// the outgoing body. The injection format is shared across all compatible
+// endpoints, so callers on the OpenAI and DeepSeek paths can reuse this function.
+func DisableThinkingForForcedToolChoice(request *BifrostChatRequest) {
+	if request == nil || request.Params == nil {
+		return
+	}
+
+	disable := false
+
+	if tc := request.Params.ToolChoice; tc != nil {
+		switch {
+		case tc.ChatToolChoiceStr != nil:
+			switch ChatToolChoiceType(*tc.ChatToolChoiceStr) {
+			case ChatToolChoiceTypeRequired, ChatToolChoiceTypeAny:
+				disable = true
+			}
+		case tc.ChatToolChoiceStruct != nil:
+			switch tc.ChatToolChoiceStruct.Type {
+			case ChatToolChoiceTypeRequired, ChatToolChoiceTypeAny,
+				ChatToolChoiceTypeFunction, ChatToolChoiceTypeCustom,
+				ChatToolChoiceTypeAllowedTools:
+				disable = true
+			}
+		}
+	}
+
+	if !disable {
+		for _, msg := range request.Input {
+			if msg.Role != ChatMessageRoleAssistant {
+				continue
+			}
+			if msg.ChatAssistantMessage == nil || msg.ChatAssistantMessage.Reasoning == nil {
+				disable = true
+				break
+			}
+		}
+	}
+
+	if !disable {
+		return
+	}
+	if request.Params.ExtraParams == nil {
+		request.Params.ExtraParams = make(map[string]any, 1)
+	}
+	request.Params.ExtraParams["thinking"] = map[string]any{"type": "disabled"}
+}

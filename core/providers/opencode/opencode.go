@@ -112,6 +112,17 @@ func (p *opencodeProvider) TextCompletionStream(ctx *schemas.BifrostContext, pos
 
 // ChatCompletion performs a chat completion request to the Opencode API.
 func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	// Thinking-mode-capable upstreams (e.g. deepseek reasoning models behind the
+	// gateway) reject a forced tool_choice while thinking is enabled, so disable
+	// thinking for those requests before the body is built. When a disable was
+	// injected into ExtraParams, enable extra-param passthrough so the thinking
+	// block actually reaches the outgoing body (see CheckContextAndGetRequestBody).
+	schemas.DisableThinkingForForcedToolChoice(request)
+	if request.Params != nil {
+		if _, ok := request.Params.ExtraParams["thinking"]; ok {
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		}
+	}
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		p.client,
@@ -131,6 +142,14 @@ func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schem
 
 // ChatCompletionStream performs a streaming chat completion request to the Opencode API.
 func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// See ChatCompletion: disable thinking for forced tool_choice and enable
+	// extra-param passthrough when a disable was injected.
+	schemas.DisableThinkingForForcedToolChoice(request)
+	if request.Params != nil {
+		if _, ok := request.Params.ExtraParams["thinking"]; ok {
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		}
+	}
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		p.streamingClient,

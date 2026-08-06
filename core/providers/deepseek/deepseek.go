@@ -69,61 +69,6 @@ func (provider *DeepSeekProvider) anthropicHeaders(key schemas.Key) map[string]s
 	return headers
 }
 
-// disableThinkingForForcedToolChoice disables thinking when it would otherwise be
-// rejected by DeepSeek's OpenAI-compatible endpoint. This covers two distinct cases:
-//
-//  1. A forced tool_choice ("required"/"any", or the struct form pinning a specific
-//     function/custom/allowed_tools call) — DeepSeek rejects a forced tool_choice while
-//     thinking is enabled (the default).
-//  2. A conversation that already contains an assistant turn without reasoning_content
-//     (e.g. synthetic/injected history, or a turn produced while thinking was off) —
-//     DeepSeek requires prior reasoning_content to be replayed once thinking is on, so if
-//     any assistant turn is missing it, thinking must stay off for the whole request.
-func disableThinkingForForcedToolChoice(request *schemas.BifrostChatRequest) {
-	if request.Params == nil {
-		return
-	}
-
-	disable := false
-
-	if tc := request.Params.ToolChoice; tc != nil {
-		switch {
-		case tc.ChatToolChoiceStr != nil:
-			switch schemas.ChatToolChoiceType(*tc.ChatToolChoiceStr) {
-			case schemas.ChatToolChoiceTypeRequired, schemas.ChatToolChoiceTypeAny:
-				disable = true
-			}
-		case tc.ChatToolChoiceStruct != nil:
-			switch tc.ChatToolChoiceStruct.Type {
-			case schemas.ChatToolChoiceTypeRequired, schemas.ChatToolChoiceTypeAny,
-				schemas.ChatToolChoiceTypeFunction, schemas.ChatToolChoiceTypeCustom,
-				schemas.ChatToolChoiceTypeAllowedTools:
-				disable = true
-			}
-		}
-	}
-
-	if !disable {
-		for _, msg := range request.Input {
-			if msg.Role != schemas.ChatMessageRoleAssistant {
-				continue
-			}
-			if msg.ChatAssistantMessage == nil || msg.ChatAssistantMessage.Reasoning == nil {
-				disable = true
-				break
-			}
-		}
-	}
-
-	if !disable {
-		return
-	}
-	if request.Params.ExtraParams == nil {
-		request.Params.ExtraParams = make(map[string]any, 1)
-	}
-	request.Params.ExtraParams["thinking"] = map[string]any{"type": "disabled"}
-}
-
 // GetProviderKey returns the provider identifier for DeepSeek.
 func (provider *DeepSeekProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.DeepSeek
@@ -211,7 +156,7 @@ func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 	}
 
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	disableThinkingForForcedToolChoice(request)
+	schemas.DisableThinkingForForcedToolChoice(request)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -265,7 +210,7 @@ func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 	}
 
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	disableThinkingForForcedToolChoice(request)
+	schemas.DisableThinkingForForcedToolChoice(request)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,

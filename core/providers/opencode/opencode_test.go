@@ -2,6 +2,11 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -346,6 +351,193 @@ func TestOpencodeCheckOperationAllowed(t *testing.T) {
 		}
 		if err.ExtraFields.RequestType != schemas.ResponsesRequest {
 			t.Errorf("expected RequestType %s, got %s", schemas.ResponsesRequest, err.ExtraFields.RequestType)
+		}
+	})
+}
+
+// passthroughPostHook is the identity post-hook: streaming requires a runner,
+// and these tests assert on what the provider produced, not on plugins.
+func passthroughPostHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return resp, err
+}
+
+// TestOpencodeChatCompletion_DisablesThinkingForForcedToolChoice verifies the
+// gateway-specific fix for deepseek-style reasoning models behind opencode:
+// a forced tool_choice must disable thinking in the outgoing body, otherwise
+// the upstream rejects the request ("Thinking mode does not support this
+// tool_choice"). Covers ChatCompletion and ChatCompletionStream, plus the
+// auto/no-tool-choice cases where thinking must NOT be touched.
+func TestOpencodeChatCompletion_DisablesThinkingForForcedToolChoice(t *testing.T) {
+	t.Parallel()
+
+	chatCompletionResponse := `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"repro-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+
+	tests := []struct {
+		name        string
+		toolChoice  *schemas.ChatToolChoice
+		wantDisable bool
+	}{
+		{
+			name: "string required forces thinking off",
+			toolChoice: &schemas.ChatToolChoice{
+				ChatToolChoiceStr: schemas.Ptr("required"),
+			},
+			wantDisable: true,
+		},
+		{
+			name: "struct function with name forces thinking off",
+			toolChoice: &schemas.ChatToolChoice{
+				ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+					Type: schemas.ChatToolChoiceTypeFunction,
+					Function: &schemas.ChatToolChoiceFunction{
+						Name: "get_time",
+					},
+				},
+			},
+			wantDisable: true,
+		},
+		{
+			name: "auto tool choice keeps thinking on",
+			toolChoice: &schemas.ChatToolChoice{
+				ChatToolChoiceStr: schemas.Ptr("auto"),
+			},
+			wantDisable: false,
+		},
+		{
+			name:        "no tool choice keeps thinking on",
+			toolChoice:  nil,
+			wantDisable: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var captured map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read body: %v", err)
+				}
+				if err := json.Unmarshal(body, &captured); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, chatCompletionResponse)
+			}))
+			defer server.Close()
+
+			provider, err := NewOpencodeZenProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+			}, nil)
+			if err != nil {
+				t.Fatalf("NewOpencodeZenProvider: %v", err)
+			}
+
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpencodeZen,
+				Model:    "deepseek-v4-flash",
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("get the current time")},
+				}},
+				Params: &schemas.ChatParameters{
+					Tools: []schemas.ChatTool{{
+						Type: "function",
+						Function: &schemas.ChatToolFunction{
+							Name:       "get_time",
+							Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+						},
+					}},
+					ToolChoice: tt.toolChoice,
+				},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			_, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, req)
+			if bifrostErr != nil {
+				t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
+			}
+
+			thinking, ok := captured["thinking"].(map[string]any)
+			if tt.wantDisable {
+				if !ok {
+					t.Fatalf("expected thinking block in outbound body, got %#v", captured)
+				}
+				if got := thinking["type"]; got != "disabled" {
+					t.Fatalf("thinking.type = %v, want disabled", got)
+				}
+			} else if ok {
+				t.Fatalf("did not expect thinking in outbound body, got %#v", captured)
+			}
+		})
+	}
+
+	t.Run("stream", func(t *testing.T) {
+		t.Parallel()
+		var captured map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if err := json.Unmarshal(body, &captured); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}`+"\n\n")
+			fmt.Fprint(w, `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		defer server.Close()
+
+		provider, err := NewOpencodeZenProvider(&schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		}, nil)
+		if err != nil {
+			t.Fatalf("NewOpencodeZenProvider: %v", err)
+		}
+
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.OpencodeZen,
+			Model:    "deepseek-v4-flash",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("get the current time")},
+			}},
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{{
+					Type: "function",
+					Function: &schemas.ChatToolFunction{
+						Name:       "get_time",
+						Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+					},
+				}},
+				ToolChoice: &schemas.ChatToolChoice{
+					ChatToolChoiceStr: schemas.Ptr("required"),
+				},
+			},
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		ch, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, req)
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionStream: %v", bifrostErr.Error.Message)
+		}
+		for chunk := range ch {
+			if chunk.BifrostError != nil {
+				t.Fatalf("stream error: %v", chunk.BifrostError.Error.Message)
+			}
+		}
+
+		thinking, ok := captured["thinking"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected thinking block in stream outbound body, got %#v", captured)
+		}
+		if got := thinking["type"]; got != "disabled" {
+			t.Fatalf("thinking.type = %v, want disabled", got)
 		}
 	})
 }
