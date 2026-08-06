@@ -7,6 +7,11 @@ go 1.26.5
 // published core v1.7.4 from the proxy.
 replace github.com/maximhq/bifrost/core => ../core
 
+// dev: use local framework source so modelcatalog symbols introduced upstream
+// (#5561, LiveModelsSyncInterval) that never shipped in a framework release
+// are compiled in; published v1.5.4 lacks them.
+replace github.com/maximhq/bifrost/framework => ../framework
+
 require (
 	github.com/andybalholm/brotli v1.2.2
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
